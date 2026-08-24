@@ -154,25 +154,36 @@ fn completeFlags(allocator: std.mem.Allocator, cmd: spec.Command, prefix: []cons
 
     for (cmd.flags) |f| {
         if (f.hidden) continue;
-        var buf: [128]u8 = undefined;
-        const display = f.display(&buf);
-        if (display.len > 0 and std.mem.startsWith(u8, display, prefix)) {
-            const owned = try allocator.dupe(u8, display);
-            try candidates.append(allocator, .{ .value = owned, .description = f.description });
-        }
+        try addFlagCandidate(allocator, &candidates, f, prefix);
     }
 
     for (cmd.persistent_flags) |f| {
         if (f.hidden) continue;
-        var buf: [128]u8 = undefined;
-        const display = f.display(&buf);
-        if (display.len > 0 and std.mem.startsWith(u8, display, prefix)) {
-            const owned = try allocator.dupe(u8, display);
-            try candidates.append(allocator, .{ .value = owned, .description = f.description });
-        }
+        try addFlagCandidate(allocator, &candidates, f, prefix);
     }
 
     return candidates.toOwnedSlice(allocator);
+}
+
+fn addFlagCandidate(allocator: std.mem.Allocator, candidates: *std.ArrayList(Candidate), f: Flag, prefix: []const u8) !void {
+    if (f.longhand.len > 0) {
+        const suffix = if (f.optarg) "?=" else if (f.takes_value) "=" else "";
+        const form = try std.fmt.allocPrint(allocator, "--{s}{s}", .{ f.longhand, suffix });
+        if (std.mem.startsWith(u8, form, prefix)) {
+            try candidates.append(allocator, .{ .value = form, .description = f.description });
+        } else {
+            allocator.free(form);
+        }
+    }
+    if (f.shorthand.len > 0) {
+        const suffix = if (f.optarg) "?=" else if (f.takes_value) "=" else "";
+        const form = try std.fmt.allocPrint(allocator, "-{s}{s}", .{ f.shorthand, suffix });
+        if (std.mem.startsWith(u8, form, prefix)) {
+            try candidates.append(allocator, .{ .value = form, .description = f.description });
+        } else {
+            allocator.free(form);
+        }
+    }
 }
 
 fn completeFlagValue(allocator: std.mem.Allocator, cmd: spec.Command, f: Flag, value: []const u8) ![]Candidate {
@@ -216,8 +227,9 @@ test "complete flag names" {
     defer arena.deinit();
     const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
     const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "--" });
-    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqual(@as(usize, 2), result.len);
     try std.testing.expectEqualStrings("--verbose", result[0].value);
+    try std.testing.expectEqualStrings("--output=", result[1].value);
 }
 
 test "complete subcommands" {
