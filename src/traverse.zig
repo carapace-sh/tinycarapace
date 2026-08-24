@@ -110,14 +110,16 @@ pub fn complete(allocator: std.mem.Allocator, root: spec.Command, cmdline: []con
     if (!dash and current.commands.len > 0 and positional_count == 0) {
         var candidates = std.ArrayList(Candidate).empty;
         for (current.commands) |cmd| {
-            if (!cmd.hidden) {
+            if (!cmd.hidden and std.mem.startsWith(u8, cmd.name, value)) {
                 try candidates.append(allocator, .{ .value = cmd.name, .description = cmd.description });
             }
         }
         if (current.completion.positional.len > 0) {
             const pos = current.completion.positional[0];
             for (pos) |v| {
-                try candidates.append(allocator, .{ .value = v });
+                if (std.mem.startsWith(u8, v, value)) {
+                    try candidates.append(allocator, .{ .value = v });
+                }
             }
         }
         return candidates.toOwnedSlice(allocator);
@@ -127,7 +129,9 @@ pub fn complete(allocator: std.mem.Allocator, root: spec.Command, cmdline: []con
         const pos = current.completion.positional[positional_count];
         var candidates = std.ArrayList(Candidate).empty;
         for (pos) |v| {
-            try candidates.append(allocator, .{ .value = v });
+            if (std.mem.startsWith(u8, v, value)) {
+                try candidates.append(allocator, .{ .value = v });
+            }
         }
         return candidates.toOwnedSlice(allocator);
     }
@@ -135,7 +139,9 @@ pub fn complete(allocator: std.mem.Allocator, root: spec.Command, cmdline: []con
     if (current.completion.positionalany.len > 0) {
         var candidates = std.ArrayList(Candidate).empty;
         for (current.completion.positionalany) |v| {
-            try candidates.append(allocator, .{ .value = v });
+            if (std.mem.startsWith(u8, v, value)) {
+                try candidates.append(allocator, .{ .value = v });
+            }
         }
         return candidates.toOwnedSlice(allocator);
     }
@@ -170,7 +176,6 @@ fn completeFlags(allocator: std.mem.Allocator, cmd: spec.Command, prefix: []cons
 }
 
 fn completeFlagValue(allocator: std.mem.Allocator, cmd: spec.Command, f: Flag, value: []const u8) ![]Candidate {
-    _ = value;
     const values = cmd.findFlagCompletion(f.name()) orelse return &.{};
     var candidates = std.ArrayList(Candidate).empty;
     for (values) |v| {
@@ -178,7 +183,9 @@ fn completeFlagValue(allocator: std.mem.Allocator, cmd: spec.Command, f: Flag, v
         var it = desc_split;
         const val = it.first();
         const desc = if (it.next()) |d| d else "";
-        try candidates.append(allocator, .{ .value = val, .description = desc });
+        if (std.mem.startsWith(u8, val, value)) {
+            try candidates.append(allocator, .{ .value = val, .description = desc });
+        }
     }
     return candidates.toOwnedSlice(allocator);
 }
