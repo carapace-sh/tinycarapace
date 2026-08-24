@@ -1,0 +1,26 @@
+name: example
+description: example command
+flags:
+  --verbose: verbose output
+  -o, --output=: output file
+  --format=: output format
+commands:
+  - name: build
+    description: build the project
+    flags:
+      --release: build in release mode
+      --target=: target triple
+    completion:
+      flag:
+        target: [x86_64-linux, aarch64-linux, x86_64-macos]
+  - name: run
+    description: run the project
+    flags:
+      --debug: enable debug mode
+    completion:
+      positional:
+        - [main, lib, test]
+  - name: test
+    description: run tests
+    completion:
+      positionalany: [unit, integration, e2e]
