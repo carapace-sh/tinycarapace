@@ -167,8 +167,7 @@ fn completeFlags(allocator: std.mem.Allocator, cmd: spec.Command, prefix: []cons
 
 fn addFlagCandidate(allocator: std.mem.Allocator, candidates: *std.ArrayList(Candidate), f: Flag, prefix: []const u8) !void {
     if (f.longhand.len > 0) {
-        const suffix = if (f.optarg) "?=" else if (f.takes_value) "=" else "";
-        const form = try std.fmt.allocPrint(allocator, "--{s}{s}", .{ f.longhand, suffix });
+        const form = try std.fmt.allocPrint(allocator, "--{s}", .{f.longhand});
         if (std.mem.startsWith(u8, form, prefix)) {
             try candidates.append(allocator, .{ .value = form, .description = f.description });
         } else {
@@ -176,8 +175,7 @@ fn addFlagCandidate(allocator: std.mem.Allocator, candidates: *std.ArrayList(Can
         }
     }
     if (f.shorthand.len > 0) {
-        const suffix = if (f.optarg) "?=" else if (f.takes_value) "=" else "";
-        const form = try std.fmt.allocPrint(allocator, "-{s}{s}", .{ f.shorthand, suffix });
+        const form = try std.fmt.allocPrint(allocator, "-{s}", .{f.shorthand});
         if (std.mem.startsWith(u8, form, prefix)) {
             try candidates.append(allocator, .{ .value = form, .description = f.description });
         } else {
@@ -229,7 +227,130 @@ test "complete flag names" {
     const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "--" });
     try std.testing.expectEqual(@as(usize, 2), result.len);
     try std.testing.expectEqualStrings("--verbose", result[0].value);
-    try std.testing.expectEqualStrings("--output=", result[1].value);
+    try std.testing.expectEqualStrings("--output", result[1].value);
+}
+
+test "complete flag names with shorthand prefix" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  --verbose: verbose
+        \\  -o, --output=: output file
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "-" });
+    try std.testing.expectEqual(@as(usize, 3), result.len);
+    try std.testing.expectEqualStrings("--verbose", result[0].value);
+    try std.testing.expectEqualStrings("--output", result[1].value);
+    try std.testing.expectEqualStrings("-o", result[2].value);
+}
+
+test "complete flag names filters by prefix" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  --verbose: verbose
+        \\  --version: show version
+        \\  --output=: output file
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "--ver" });
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqualStrings("--verbose", result[0].value);
+    try std.testing.expectEqualStrings("--version", result[1].value);
+}
+
+test "complete flag names excludes hidden flags" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  --visible: visible flag
+        \\  --hidden&: hidden flag
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "--" });
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqualStrings("--visible", result[0].value);
+}
+
+test "complete flag value after space" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  -o, --output=: output file
+        \\completion:
+        \\  flag:
+        \\    output: [file1, file2]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "-o", "" });
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqualStrings("file1", result[0].value);
+    try std.testing.expectEqualStrings("file2", result[1].value);
+}
+
+test "complete flag value with --flag= prefix" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  --output=: output file
+        \\completion:
+        \\  flag:
+        \\    output: [file1, file2]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "--output=fi" });
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqualStrings("file1", result[0].value);
+    try std.testing.expectEqualStrings("file2", result[1].value);
+}
+
+test "complete flag value with longhand" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  -o, --output=: output file
+        \\completion:
+        \\  flag:
+        \\    output: [file1, file2]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "--output", "" });
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqualStrings("file1", result[0].value);
+}
+
+test "complete flag value with description" {
+    const yaml_src =
+        "name: mycmd\n" ++
+        "flags:\n" ++
+        "  --format=: output format\n" ++
+        "completion:\n" ++
+        "  flag:\n" ++
+        "    format: [json\tJSON, yaml\tYAML, toml\tTOML]\n";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "--format", "" });
+    try std.testing.expectEqual(@as(usize, 3), result.len);
+    try std.testing.expectEqualStrings("json", result[0].value);
+    try std.testing.expectEqualStrings("JSON", result[0].description);
+    try std.testing.expectEqualStrings("yaml", result[1].value);
+    try std.testing.expectEqualStrings("YAML", result[1].description);
+    try std.testing.expectEqualStrings("toml", result[2].value);
+    try std.testing.expectEqualStrings("TOML", result[2].description);
 }
 
 test "complete subcommands" {
@@ -247,23 +368,64 @@ test "complete subcommands" {
     const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "" });
     try std.testing.expectEqual(@as(usize, 2), result.len);
     try std.testing.expectEqualStrings("sub1", result[0].value);
+    try std.testing.expectEqualStrings("first", result[0].description);
+    try std.testing.expectEqualStrings("sub2", result[1].value);
+    try std.testing.expectEqualStrings("second", result[1].description);
 }
 
-test "complete flag value" {
+test "complete subcommands filters by prefix" {
     const yaml_src =
         \\name: mycmd
-        \\flags:
-        \\  -o, --output=: output file
-        \\completion:
-        \\  flag:
-        \\    output: [file1, file2]
+        \\commands:
+        \\  - name: build
+        \\    description: build the project
+        \\  - name: run
+        \\    description: run the project
     ;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
-    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "-o", "" });
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "b" });
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqualStrings("build", result[0].value);
+}
+
+test "complete subcommands excludes hidden" {
+    const yaml_src =
+        \\name: mycmd
+        \\commands:
+        \\  - name: visible
+        \\    description: visible subcommand
+        \\  - name: hidden
+        \\    hidden: true
+        \\    description: hidden subcommand
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "" });
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqualStrings("visible", result[0].value);
+}
+
+test "complete nested subcommand" {
+    const yaml_src =
+        \\name: mycmd
+        \\commands:
+        \\  - name: sub
+        \\    commands:
+        \\      - name: subsub1
+        \\        description: first nested
+        \\      - name: subsub2
+        \\        description: second nested
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "sub", "" });
     try std.testing.expectEqual(@as(usize, 2), result.len);
-    try std.testing.expectEqualStrings("file1", result[0].value);
+    try std.testing.expectEqualStrings("subsub1", result[0].value);
+    try std.testing.expectEqualStrings("subsub2", result[1].value);
 }
 
 test "complete positional" {
@@ -278,4 +440,439 @@ test "complete positional" {
     const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
     const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "" });
     try std.testing.expectEqual(@as(usize, 3), result.len);
+}
+
+test "complete positionalany" {
+    const yaml_src =
+        \\name: mycmd
+        \\completion:
+        \\  positionalany: [unit, integration, e2e]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "" });
+    try std.testing.expectEqual(@as(usize, 3), result.len);
+    try std.testing.expectEqualStrings("unit", result[0].value);
+    try std.testing.expectEqualStrings("integration", result[1].value);
+    try std.testing.expectEqualStrings("e2e", result[2].value);
+}
+
+test "complete positionalany after positional consumed" {
+    const yaml_src =
+        \\name: mycmd
+        \\completion:
+        \\  positional:
+        \\    - [first, second]
+        \\  positionalany: [any1, any2]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "first", "" });
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqualStrings("any1", result[0].value);
+    try std.testing.expectEqualStrings("any2", result[1].value);
+}
+
+test "complete subcommand and positional batch" {
+    const yaml_src =
+        \\name: mycmd
+        \\commands:
+        \\  - name: build
+        \\    description: build it
+        \\completion:
+        \\  positional:
+        \\    - [file1, file2]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "" });
+    try std.testing.expectEqual(@as(usize, 3), result.len);
+    try std.testing.expectEqualStrings("build", result[0].value);
+    try std.testing.expectEqualStrings("file1", result[1].value);
+    try std.testing.expectEqualStrings("file2", result[2].value);
+}
+
+test "complete flag value in subcommand" {
+    const yaml_src =
+        \\name: mycmd
+        \\commands:
+        \\  - name: build
+        \\    flags:
+        \\      --target=: target triple
+        \\    completion:
+        \\      flag:
+        \\        target: [x86_64-linux, aarch64-linux]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "build", "--target", "" });
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqualStrings("x86_64-linux", result[0].value);
+    try std.testing.expectEqualStrings("aarch64-linux", result[1].value);
+}
+
+test "complete flags in subcommand does not inherit parent persistent flags" {
+    // Known limitation: persistent flags are NOT inherited from ancestor commands.
+    // Only persistent_flags defined on the current command are visible via findFlag().
+    const yaml_src =
+        \\name: mycmd
+        \\persistentflags:
+        \\  -v, --verbose: verbose
+        \\commands:
+        \\  - name: build
+        \\    flags:
+        \\      --target=: target triple
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "build", "--" });
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqualStrings("--target", result[0].value);
+}
+
+test "complete flags after consuming persistent flag value" {
+    const yaml_src =
+        \\name: mycmd
+        \\persistentflags:
+        \\  --config=: config file
+        \\commands:
+        \\  - name: build
+        \\    flags:
+        \\      --target=: target triple
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "--config", "/etc/app.conf", "build", "--" });
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqualStrings("--target", result[0].value);
+}
+
+test "complete positional after flag" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  --bool: bool flag
+        \\completion:
+        \\  positionalany: [one, two, three]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "--bool", "" });
+    try std.testing.expectEqual(@as(usize, 3), result.len);
+    try std.testing.expectEqualStrings("one", result[0].value);
+    try std.testing.expectEqualStrings("two", result[1].value);
+    try std.testing.expectEqualStrings("three", result[2].value);
+}
+
+test "complete positional after flag with value" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  --format=: output format
+        \\completion:
+        \\  positionalany: [one, two, three]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "--format", "json", "" });
+    try std.testing.expectEqual(@as(usize, 3), result.len);
+    try std.testing.expectEqualStrings("one", result[0].value);
+}
+
+test "complete after dash disables flag parsing" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  --bool: bool flag
+        \\completion:
+        \\  positionalany: [one, two, three]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "--", "-" });
+    try std.testing.expectEqual(@as(usize, 0), result.len);
+}
+
+test "complete positional after dash" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  --bool: bool flag
+        \\completion:
+        \\  positionalany: [one, two, three]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "--", "" });
+    try std.testing.expectEqual(@as(usize, 3), result.len);
+    try std.testing.expectEqualStrings("one", result[0].value);
+    try std.testing.expectEqualStrings("two", result[1].value);
+    try std.testing.expectEqualStrings("three", result[2].value);
+}
+
+test "complete subcommand with disabled parsing" {
+    const yaml_src =
+        \\name: mycmd
+        \\commands:
+        \\  - name: sub
+        \\    parsing: disabled
+        \\    flags:
+        \\      --flag: a flag
+        \\    completion:
+        \\      positionalany: [one, two, three]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "sub", "--" });
+    try std.testing.expectEqual(@as(usize, 0), result.len);
+}
+
+test "complete subcommand with disabled parsing shows positionals for empty string" {
+    // With parsing disabled, flag_parsing is false, so -- is not treated as a flag prefix.
+    // It becomes a positional value prefix, but no positional values start with --.
+    // Use empty string to verify positionals still work with disabled parsing.
+    const yaml_src =
+        \\name: mycmd
+        \\commands:
+        \\  - name: sub
+        \\    parsing: disabled
+        \\    completion:
+        \\      positionalany: [one, two, three]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "sub", "" });
+    try std.testing.expectEqual(@as(usize, 3), result.len);
+    try std.testing.expectEqualStrings("one", result[0].value);
+    try std.testing.expectEqualStrings("two", result[1].value);
+    try std.testing.expectEqualStrings("three", result[2].value);
+}
+
+test "complete repeatable flag shown again" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  --repeatable*: repeatable flag
+        \\  --other: other flag
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "--repeatable", "--" });
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqualStrings("--repeatable", result[0].value);
+    try std.testing.expectEqualStrings("--other", result[1].value);
+}
+
+test "complete optarg flag as bare name" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  --optarg?: optional argument flag
+        \\  --normal: normal flag
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "--" });
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqualStrings("--optarg", result[0].value);
+    try std.testing.expectEqualStrings("--normal", result[1].value);
+}
+
+test "complete flag value via attached equals" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  --format=: output format
+        \\completion:
+        \\  flag:
+        \\    format: [json, yaml]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "--format=" });
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqualStrings("json", result[0].value);
+    try std.testing.expectEqualStrings("yaml", result[1].value);
+}
+
+test "complete flag value via attached equals with prefix" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  --format=: output format
+        \\completion:
+        \\  flag:
+        \\    format: [json, yaml]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "--format=ya" });
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqualStrings("yaml", result[0].value);
+}
+
+test "complete no candidates for unknown flag value" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  --format=: output format
+        \\completion:
+        \\  flag:
+        \\    format: [json, yaml]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "--unknown", "" });
+    try std.testing.expectEqual(@as(usize, 0), result.len);
+}
+
+test "complete empty command returns nothing" {
+    const yaml_src =
+        \\name: mycmd
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "" });
+    try std.testing.expectEqual(@as(usize, 0), result.len);
+}
+
+test "complete only command name returns nothing" {
+    const yaml_src =
+        \\name: mycmd
+        \\commands:
+        \\  - name: sub
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{"mycmd"});
+    try std.testing.expectEqual(@as(usize, 0), result.len);
+}
+
+test "complete no args returns nothing" {
+    const yaml_src =
+        \\name: mycmd
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{});
+    try std.testing.expectEqual(@as(usize, 0), result.len);
+}
+
+test "complete subcommand via alias enters subcommand" {
+    // Aliases are used for subcommand matching during traversal but not completed.
+    // Entering via alias 'b' resolves to 'build' subcommand, which has no completions.
+    const yaml_src =
+        \\name: mycmd
+        \\commands:
+        \\  - name: build
+        \\    aliases: [b, bu]
+        \\    description: build the project
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "b", "" });
+    try std.testing.expectEqual(@as(usize, 0), result.len);
+}
+
+test "complete flag value filters by prefix" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  --color=: color
+        \\completion:
+        \\  flag:
+        \\    color: [red, green, blue]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "--color", "b" });
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqualStrings("blue", result[0].value);
+}
+
+test "complete positional filters by prefix" {
+    const yaml_src =
+        \\name: mycmd
+        \\completion:
+        \\  positional:
+        \\    - [apple, banana, cherry]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "a" });
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqualStrings("apple", result[0].value);
+}
+
+test "complete positionalany filters by prefix" {
+    const yaml_src =
+        \\name: mycmd
+        \\completion:
+        \\  positionalany: [unit, integration, e2e]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "e" });
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqualStrings("e2e", result[0].value);
+}
+
+test "complete second positional position" {
+    const yaml_src =
+        \\name: mycmd
+        \\completion:
+        \\  positional:
+        \\    - [src, dst]
+        \\    - [fast, slow]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "src", "" });
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqualStrings("fast", result[0].value);
+    try std.testing.expectEqualStrings("slow", result[1].value);
+}
+
+test "complete flag value via attached equals for longhand only" {
+    // Shorthand attached equals (-f=value) is not handled by the traversal engine.
+    // Only longhand --flag=value is supported for attached value completion.
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  -f, --format=: output format
+        \\completion:
+        \\  flag:
+        \\    format: [json, yaml]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "--format=ya" });
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqualStrings("yaml", result[0].value);
 }
