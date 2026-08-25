@@ -67,9 +67,39 @@ pub fn complete(allocator: std.mem.Allocator, root: spec.Command, cmdline: []con
                 }
             } else {
                 const name = arg[1..];
-                if (current.findFlag(name)) |f| {
-                    if (f.takes_value and !f.optarg) {
-                        in_flag = f;
+                if (name.len <= 1) {
+                    if (current.findFlag(name)) |f| {
+                        if (f.takes_value and !f.optarg) {
+                            in_flag = f;
+                        }
+                    }
+                } else {
+                    // POSIX shorthand series: walk each char
+                    var j: usize = 0;
+                    while (j < name.len) : (j += 1) {
+                        const ch = name[j .. j + 1];
+                        if (current.findFlag(ch)) |f| {
+                            if (f.takes_value and !f.optarg) {
+                                if (j < name.len - 1) {
+                                    // Rest of string is attached value
+                                } else {
+                                    in_flag = f;
+                                }
+                                break;
+                            } else if (f.optarg) {
+                                // Optarg - rest is optional value, stop chaining
+                                break;
+                            }
+                            // Bool - continue to next char
+                        } else {
+                            // Unknown shorthand - try whole name as flag
+                            if (current.findFlag(name)) |f2| {
+                                if (f2.takes_value and !f2.optarg) {
+                                    in_flag = f2;
+                                }
+                            }
+                            break;
+                        }
                     }
                 }
             }
@@ -104,7 +134,14 @@ pub fn complete(allocator: std.mem.Allocator, root: spec.Command, cmdline: []con
             }
             return completeFlags(allocator, current, value);
         }
-        return completeFlags(allocator, current, value);
+        // Shorthand series: value is like "-v" or "-vf"
+        // If only "-", complete all flags (longhand + shorthand)
+        if (value.len == 1) {
+            return completeFlags(allocator, current, value);
+        }
+        // If multi-char shorthand series, check if all typed chars are valid bool/count shorthands
+        const shorthand_part = value[1..];
+        return completeShorthandSeries(allocator, current, shorthand_part);
     }
 
     if (!dash and current.commands.len > 0 and positional_count == 0) {
@@ -182,6 +219,75 @@ fn addFlagCandidate(allocator: std.mem.Allocator, candidates: *std.ArrayList(Can
             allocator.free(form);
         }
     }
+}
+
+fn completeShorthandSeries(allocator: std.mem.Allocator, cmd: spec.Command, shorthand_part: []const u8) ![]Candidate {
+    // Walk the already-typed shorthand chars. All must be valid bool/optarg shorthands.
+    // If any is a non-optarg value flag, the rest would be consumed as its attached value,
+    // so we can't chain further — fall back to completing that flag's value.
+    var j: usize = 0;
+    while (j < shorthand_part.len) : (j += 1) {
+        const ch = shorthand_part[j .. j + 1];
+        if (cmd.findFlag(ch)) |f| {
+            if (f.takes_value and !f.optarg) {
+                // This flag consumes the rest as attached value.
+                // If we're at the last char, complete flag value for this flag.
+                // Otherwise, the rest is the attached value prefix.
+                if (j == shorthand_part.len - 1) {
+                    // Last char is a value flag expecting next arg — complete its value
+                    return completeFlagValue(allocator, cmd, f, "");
+                }
+                // Rest after this char is the attached value prefix
+                const attached = shorthand_part[j + 1 ..];
+                return completeFlagValueWithPrefix(allocator, cmd, f.name(), attached);
+            } else if (f.optarg) {
+                // Optarg flag: rest after this char is optional value
+                if (j == shorthand_part.len - 1) {
+                    // At the end — could complete optarg value or more shorthands
+                    break;
+                }
+                // Has more chars after optarg — those are the optarg's value
+                break;
+            }
+            // Bool flag — continue to next char
+        } else {
+            // Unknown shorthand char — no valid completions
+            return &.{};
+        }
+    }
+
+    // All typed chars are valid bool/optarg shorthands.
+    // Offer remaining valid shorthand flags as chaining candidates.
+    // Candidate value is the full typed prefix + new shorthand char.
+    var candidates = std.ArrayList(Candidate).empty;
+    for (cmd.flags) |f| {
+        if (f.hidden or f.shorthand.len == 0) continue;
+        // Skip shorthands already used in the series
+        var already_used = false;
+        for (shorthand_part) |c| {
+            if (f.shorthand.len > 0 and f.shorthand[0] == c) {
+                already_used = true;
+                break;
+            }
+        }
+        if (already_used) continue;
+        const form = try std.fmt.allocPrint(allocator, "-{s}{s}", .{ shorthand_part, f.shorthand });
+        try candidates.append(allocator, .{ .value = form, .description = f.description });
+    }
+    for (cmd.persistent_flags) |f| {
+        if (f.hidden or f.shorthand.len == 0) continue;
+        var already_used = false;
+        for (shorthand_part) |c| {
+            if (f.shorthand.len > 0 and f.shorthand[0] == c) {
+                already_used = true;
+                break;
+            }
+        }
+        if (already_used) continue;
+        const form = try std.fmt.allocPrint(allocator, "-{s}{s}", .{ shorthand_part, f.shorthand });
+        try candidates.append(allocator, .{ .value = form, .description = f.description });
+    }
+    return candidates.toOwnedSlice(allocator);
 }
 
 fn completeFlagValue(allocator: std.mem.Allocator, cmd: spec.Command, f: Flag, value: []const u8) ![]Candidate {
@@ -875,4 +981,190 @@ test "complete flag value via attached equals for longhand only" {
     const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "--format=ya" });
     try std.testing.expectEqual(@as(usize, 1), result.len);
     try std.testing.expectEqualStrings("yaml", result[0].value);
+}
+
+test "shorthand series complete single bool shorthand" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  -v: verbose
+        \\  -f: force
+        \\  -o, --output=: output file
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "-v" });
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqualStrings("-vf", result[0].value);
+    try std.testing.expectEqualStrings("-vo", result[1].value);
+}
+
+test "shorthand series complete two bool shorthands" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  -v: verbose
+        \\  -f: force
+        \\  -o, --output=: output file
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "-vf" });
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqualStrings("-vfo", result[0].value);
+}
+
+test "shorthand series excludes already used shorthands" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  -v: verbose
+        \\  -f: force
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "-vf" });
+    try std.testing.expectEqual(@as(usize, 0), result.len);
+}
+
+test "shorthand series with value flag at end completes flag value" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  -v: verbose
+        \\  -o, --output=: output file
+        \\completion:
+        \\  flag:
+        \\    output: [file1, file2]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "-vo" });
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqualStrings("file1", result[0].value);
+    try std.testing.expectEqualStrings("file2", result[1].value);
+}
+
+test "shorthand series with value flag and attached prefix" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  -v: verbose
+        \\  -o, --output=: output file
+        \\completion:
+        \\  flag:
+        \\    output: [file1, file2]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    // -vofi: v is bool, o takes value, "fi" is attached value prefix
+    // Both file1 and file2 start with "fi"
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "-vofi" });
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqualStrings("file1", result[0].value);
+    try std.testing.expectEqualStrings("file2", result[1].value);
+}
+
+test "shorthand series traversal chains bool flags" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  -v: verbose
+        \\  -f: force
+        \\completion:
+        \\  positionalany: [one, two, three]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "-vf", "" });
+    try std.testing.expectEqual(@as(usize, 3), result.len);
+    try std.testing.expectEqualStrings("one", result[0].value);
+    try std.testing.expectEqualStrings("two", result[1].value);
+    try std.testing.expectEqualStrings("three", result[2].value);
+}
+
+test "shorthand series traversal with value flag consumes rest as attached" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  -v: verbose
+        \\  -o, --output=: output file
+        \\completion:
+        \\  positionalany: [one, two, three]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    // -vofile: v is bool, o takes value, "file" is attached value
+    // Then "" is a positional
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "-vofile", "" });
+    try std.testing.expectEqual(@as(usize, 3), result.len);
+    try std.testing.expectEqualStrings("one", result[0].value);
+}
+
+test "shorthand series unknown char returns nothing" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  -v: verbose
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "-vx" });
+    try std.testing.expectEqual(@as(usize, 0), result.len);
+}
+
+test "shorthand series excludes hidden flags" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  -v: verbose
+        \\  -h&: hidden flag
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "-v" });
+    try std.testing.expectEqual(@as(usize, 0), result.len);
+}
+
+test "shorthand series includes persistent flags" {
+    const yaml_src =
+        \\name: mycmd
+        \\persistentflags:
+        \\  -p: persistent flag
+        \\flags:
+        \\  -v: verbose
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "-v" });
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqualStrings("-vp", result[0].value);
+}
+
+test "shorthand series single dash completes all flags" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  -v: verbose
+        \\  -o, --output=: output file
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "-" });
+    try std.testing.expectEqual(@as(usize, 3), result.len);
+    // -v has no longhand so only shorthand; -o has both, longhand emitted first
+    try std.testing.expectEqualStrings("-v", result[0].value);
+    try std.testing.expectEqualStrings("--output", result[1].value);
+    try std.testing.expectEqualStrings("-o", result[2].value);
 }
