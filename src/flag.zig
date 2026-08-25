@@ -9,6 +9,7 @@ pub const Flag = struct {
     repeatable: bool = false,
     hidden: bool = false,
     required: bool = false,
+    name_as_shorthand: bool = false,
 
     pub fn name(self: Flag) []const u8 {
         if (self.longhand.len > 0) return self.longhand;
@@ -19,6 +20,10 @@ pub const Flag = struct {
         if (self.longhand.len > 0 and std.mem.eql(u8, arg, self.longhand)) return true;
         if (self.shorthand.len > 0 and std.mem.eql(u8, arg, self.shorthand)) return true;
         return false;
+    }
+
+    pub fn isNonPosix(self: Flag) bool {
+        return self.name_as_shorthand or self.shorthand.len > 1;
     }
 
     pub fn display(self: Flag, buf: []u8) []const u8 {
@@ -36,10 +41,15 @@ pub const Flag = struct {
             }
         }
         if (self.longhand.len > 0) {
-            buf[pos] = '-';
-            pos += 1;
-            buf[pos] = '-';
-            pos += 1;
+            if (self.name_as_shorthand) {
+                buf[pos] = '-';
+                pos += 1;
+            } else {
+                buf[pos] = '-';
+                pos += 1;
+                buf[pos] = '-';
+                pos += 1;
+            }
             @memcpy(buf[pos .. pos + self.longhand.len], self.longhand);
             pos += self.longhand.len;
         }
@@ -68,88 +78,75 @@ pub const Flag = struct {
 
 pub fn parseFlag(key: []const u8, description: []const u8) Flag {
     var f = Flag{ .description = description };
-    var s = key;
 
-    if (std.mem.indexOf(u8, s, ", ")) |sep| {
-        const left = s[0..sep];
-        const right = s[sep + 2 ..];
-        if (left.len > 0 and left[0] == '-') {
-            if (left.len > 1 and left[1] == '-') {
-                f.longhand = left[2..];
-            } else {
-                f.shorthand = left[1..];
-            }
-        }
-        s = right;
-    }
+    // Split into [shorthand, longhand, modifiers] parts
+    // carapace-spec regex: ^(shorthand)?(, )?(longhand)?(modifiers)$
+    // shorthand: -[^-][^ =*?&!]*  (single dash, not double-dash)
+    // longhand:  -[-]?[^ =*?&!]*  (single or double dash)
+    // modifiers: [=*?&!]*          (any combination)
 
-    if (s.len > 0 and s[0] == '-') {
-        if (s.len > 1 and s[1] == '-') {
-            f.longhand = s[2..];
-        } else {
-            if (f.longhand.len == 0 and f.shorthand.len == 0) {
-                f.shorthand = s[1..];
-            } else if (f.shorthand.len == 0) {
-                f.shorthand = s[1..];
-            } else {
-                f.longhand = s[1..];
-            }
+    // First, extract modifiers from the end of the string
+    var modifiers_len: usize = 0;
+    while (modifiers_len < key.len) {
+        const c = key[key.len - 1 - modifiers_len];
+        switch (c) {
+            '=', '*', '?', '&', '!' => modifiers_len += 1,
+            else => break,
         }
     }
+    const modifiers = key[key.len - modifiers_len ..];
+    const body = key[0 .. key.len - modifiers_len];
 
-    var rest = if (f.longhand.len > 0) f.longhand else f.shorthand;
-    while (rest.len > 0) {
-        switch (rest[rest.len - 1]) {
-            '*' => {
-                f.repeatable = true;
-                rest = rest[0 .. rest.len - 1];
-            },
-            '!' => {
-                f.required = true;
-                rest = rest[0 .. rest.len - 1];
-            },
-            '&' => {
-                f.hidden = true;
-                rest = rest[0 .. rest.len - 1];
-            },
+    // Parse modifiers (order-independent, like carapace-spec)
+    for (modifiers) |c| {
+        switch (c) {
+            '*' => f.repeatable = true,
             '?' => {
                 f.optarg = true;
                 f.takes_value = true;
-                rest = rest[0 .. rest.len - 1];
             },
-            '=' => {
-                f.takes_value = true;
-                rest = rest[0 .. rest.len - 1];
-            },
-            else => break,
+            '=' => f.takes_value = true,
+            '&' => f.hidden = true,
+            '!' => f.required = true,
+            else => {},
         }
     }
 
-    if (f.longhand.len > 0) {
-        f.longhand = stripSuffixes(f.longhand);
-    }
-    if (f.shorthand.len > 0) {
-        f.shorthand = stripSuffixes(f.shorthand);
+    // Split body on ", " to get shorthand and longhand parts
+    if (std.mem.indexOf(u8, body, ", ")) |sep| {
+        const left = body[0..sep];
+        const right = body[sep + 2 ..];
+        // Left is always shorthand (single dash)
+        if (left.len > 1 and left[0] == '-' and left[1] != '-') {
+            f.shorthand = left[1..];
+        }
+        // Right can be --longhand (POSIX) or -longhand (non-POSIX)
+        if (right.len > 2 and right[0] == '-' and right[1] == '-') {
+            f.longhand = right[2..];
+        } else if (right.len > 1 and right[0] == '-') {
+            f.longhand = right[1..];
+            f.name_as_shorthand = true;
+        }
+    } else {
+        // Single part: either shorthand or longhand
+        if (body.len > 2 and body[0] == '-' and body[1] == '-') {
+            f.longhand = body[2..];
+        } else if (body.len > 1 and body[0] == '-') {
+            // Could be shorthand-only or non-posix longhand-only
+            // carapace-spec treats single-dash, single-char as shorthand
+            // and single-dash, multi-char as non-posix shorthand
+            f.shorthand = body[1..];
+        }
     }
 
     return f;
-}
-
-fn stripSuffixes(s: []const u8) []const u8 {
-    var r = s;
-    while (r.len > 0) {
-        switch (r[r.len - 1]) {
-            '*', '!', '&', '?', '=' => r = r[0 .. r.len - 1],
-            else => break,
-        }
-    }
-    return r;
 }
 
 test "parse --verbose" {
     const f = parseFlag("--verbose", "verbose");
     try std.testing.expectEqualStrings("verbose", f.longhand);
     try std.testing.expect(!f.takes_value);
+    try std.testing.expect(!f.name_as_shorthand);
 }
 
 test "parse -o, --output=" {
@@ -157,6 +154,7 @@ test "parse -o, --output=" {
     try std.testing.expectEqualStrings("o", f.shorthand);
     try std.testing.expectEqualStrings("output", f.longhand);
     try std.testing.expect(f.takes_value);
+    try std.testing.expect(!f.name_as_shorthand);
 }
 
 test "parse --optarg?=" {
@@ -195,4 +193,129 @@ test "flag display" {
     var buf: [64]u8 = undefined;
     const d = f.display(&buf);
     try std.testing.expectEqualStrings("-o, --output=", d);
+}
+
+test "parse shorthand-only slice" {
+    const f = parseFlag("-s*", "repeatable");
+    try std.testing.expectEqualStrings("s", f.shorthand);
+    try std.testing.expect(f.repeatable);
+}
+
+test "parse shorthand-only slice value" {
+    const f = parseFlag("-s*=", "repeatable value");
+    try std.testing.expectEqualStrings("s", f.shorthand);
+    try std.testing.expect(f.repeatable);
+    try std.testing.expect(f.takes_value);
+}
+
+test "parse shorthand-only value" {
+    const f = parseFlag("-s=", "value");
+    try std.testing.expectEqualStrings("s", f.shorthand);
+    try std.testing.expect(f.takes_value);
+}
+
+test "parse shorthand-only optarg" {
+    const f = parseFlag("-s?", "optarg");
+    try std.testing.expectEqualStrings("s", f.shorthand);
+    try std.testing.expect(f.takes_value);
+    try std.testing.expect(f.optarg);
+}
+
+test "parse longhand-only value" {
+    const f = parseFlag("--long=", "value");
+    try std.testing.expectEqualStrings("long", f.longhand);
+    try std.testing.expect(f.takes_value);
+}
+
+test "parse longhand-only slice optarg" {
+    const f = parseFlag("--long*?", "slice optarg");
+    try std.testing.expectEqualStrings("long", f.longhand);
+    try std.testing.expect(f.optarg);
+    try std.testing.expect(f.repeatable);
+    try std.testing.expect(f.takes_value);
+}
+
+test "parse both" {
+    const f = parseFlag("-s, --long", "both");
+    try std.testing.expectEqualStrings("s", f.shorthand);
+    try std.testing.expectEqualStrings("long", f.longhand);
+    try std.testing.expect(!f.takes_value);
+    try std.testing.expect(!f.name_as_shorthand);
+}
+
+test "parse both value" {
+    const f = parseFlag("-s, --long=", "both value");
+    try std.testing.expectEqualStrings("s", f.shorthand);
+    try std.testing.expectEqualStrings("long", f.longhand);
+    try std.testing.expect(f.takes_value);
+}
+
+test "parse both optarg" {
+    const f = parseFlag("-s, --long?", "both optarg");
+    try std.testing.expectEqualStrings("s", f.shorthand);
+    try std.testing.expectEqualStrings("long", f.longhand);
+    try std.testing.expect(f.takes_value);
+    try std.testing.expect(f.optarg);
+}
+
+test "parse both slice optarg" {
+    const f = parseFlag("-s, --long*?", "both slice optarg");
+    try std.testing.expectEqualStrings("s", f.shorthand);
+    try std.testing.expectEqualStrings("long", f.longhand);
+    try std.testing.expect(f.takes_value);
+    try std.testing.expect(f.repeatable);
+    try std.testing.expect(f.optarg);
+}
+
+test "parse nonposix shorthand" {
+    const f = parseFlag("-short", "nonposix shorthand");
+    try std.testing.expectEqualStrings("short", f.shorthand);
+    try std.testing.expectEqualStrings("", f.longhand);
+}
+
+test "parse nonposix shorthand optarg" {
+    const f = parseFlag("-short?", "nonposix optarg");
+    try std.testing.expectEqualStrings("short", f.shorthand);
+    try std.testing.expect(f.takes_value);
+    try std.testing.expect(f.optarg);
+}
+
+test "parse nonposix both" {
+    const f = parseFlag("-short, -long*", "nonposix both");
+    try std.testing.expectEqualStrings("short", f.shorthand);
+    try std.testing.expectEqualStrings("long", f.longhand);
+    try std.testing.expect(f.repeatable);
+    try std.testing.expect(f.name_as_shorthand);
+}
+
+test "parse nonposix mixed" {
+    const f = parseFlag("-short, --long", "nonposix mixed");
+    try std.testing.expectEqualStrings("short", f.shorthand);
+    try std.testing.expectEqualStrings("long", f.longhand);
+    try std.testing.expect(!f.name_as_shorthand);
+}
+
+test "nonposix flag display" {
+    const f = parseFlag("-short, -long*", "nonposix");
+    var buf: [64]u8 = undefined;
+    const d = f.display(&buf);
+    try std.testing.expectEqualStrings("-short, -long*", d);
+}
+
+test "nonposix flag matches" {
+    const f = parseFlag("-short, -long*", "nonposix");
+    try std.testing.expect(f.matches("short"));
+    try std.testing.expect(f.matches("long"));
+    try std.testing.expect(!f.matches("other"));
+}
+
+test "nonposix isNonPosix" {
+    const f1 = parseFlag("-short", "nonposix");
+    try std.testing.expect(f1.isNonPosix());
+    const f2 = parseFlag("-s", "posix");
+    try std.testing.expect(!f2.isNonPosix());
+    const f3 = parseFlag("-short, -long", "nonposix both");
+    try std.testing.expect(f3.isNonPosix());
+    const f4 = parseFlag("-short, --long", "nonposix mixed");
+    try std.testing.expect(f4.isNonPosix());
 }

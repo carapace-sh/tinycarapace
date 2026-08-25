@@ -67,13 +67,12 @@ pub fn complete(allocator: std.mem.Allocator, root: spec.Command, cmdline: []con
                 }
             } else {
                 const name = arg[1..];
-                if (name.len <= 1) {
-                    if (current.findFlag(name)) |f| {
-                        if (f.takes_value and !f.optarg) {
-                            in_flag = f;
-                        }
+                // Try whole-name match first (non-POSIX flags like -short)
+                if (current.findFlag(name)) |f| {
+                    if (f.takes_value and !f.optarg) {
+                        in_flag = f;
                     }
-                } else {
+                } else if (name.len > 1) {
                     // POSIX shorthand series: walk each char
                     var j: usize = 0;
                     while (j < name.len) : (j += 1) {
@@ -92,12 +91,7 @@ pub fn complete(allocator: std.mem.Allocator, root: spec.Command, cmdline: []con
                             }
                             // Bool - continue to next char
                         } else {
-                            // Unknown shorthand - try whole name as flag
-                            if (current.findFlag(name)) |f2| {
-                                if (f2.takes_value and !f2.optarg) {
-                                    in_flag = f2;
-                                }
-                            }
+                            // Unknown shorthand char
                             break;
                         }
                     }
@@ -139,8 +133,26 @@ pub fn complete(allocator: std.mem.Allocator, root: spec.Command, cmdline: []con
         if (value.len == 1) {
             return completeFlags(allocator, current, value);
         }
-        // If multi-char shorthand series, check if all typed chars are valid bool/count shorthands
+        // Check for = delimiter (non-POSIX -flag=value or POSIX -f=value)
+        if (std.mem.indexOfScalar(u8, value, '=')) |eq| {
+            const flag_name = value[1..eq];
+            const prefix = value[eq + 1 ..];
+            if (current.findFlag(flag_name)) |_| {
+                return completeFlagValueWithPrefix(allocator, current, flag_name, prefix);
+            }
+        }
+        // Multi-char single-dash: could be non-POSIX flag or shorthand series.
+        // If the whole typed part matches a flag name, complete as flag names.
+        // Otherwise, try shorthand series (POSIX single-char chaining).
         const shorthand_part = value[1..];
+        if (shorthand_part.len > 1 and current.findFlag(shorthand_part) != null) {
+            return completeFlags(allocator, current, value);
+        }
+        // Check if any flag has a multi-char shorthand (non-POSIX mode).
+        // If so, don't do shorthand series — just complete flag names by prefix.
+        if (hasNonPosixFlags(current)) {
+            return completeFlags(allocator, current, value);
+        }
         return completeShorthandSeries(allocator, current, shorthand_part);
     }
 
@@ -186,6 +198,16 @@ pub fn complete(allocator: std.mem.Allocator, root: spec.Command, cmdline: []con
     return &.{};
 }
 
+fn hasNonPosixFlags(cmd: spec.Command) bool {
+    for (cmd.flags) |f| {
+        if (f.isNonPosix()) return true;
+    }
+    for (cmd.persistent_flags) |f| {
+        if (f.isNonPosix()) return true;
+    }
+    return false;
+}
+
 fn completeFlags(allocator: std.mem.Allocator, cmd: spec.Command, prefix: []const u8) ![]Candidate {
     var candidates = std.ArrayList(Candidate).empty;
 
@@ -204,7 +226,8 @@ fn completeFlags(allocator: std.mem.Allocator, cmd: spec.Command, prefix: []cons
 
 fn addFlagCandidate(allocator: std.mem.Allocator, candidates: *std.ArrayList(Candidate), f: Flag, prefix: []const u8) !void {
     if (f.longhand.len > 0) {
-        const form = try std.fmt.allocPrint(allocator, "--{s}", .{f.longhand});
+        const dash = if (f.name_as_shorthand) "-" else "--";
+        const form = try std.fmt.allocPrint(allocator, "{s}{s}", .{ dash, f.longhand });
         if (std.mem.startsWith(u8, form, prefix)) {
             try candidates.append(allocator, .{ .value = form, .description = f.description });
         } else {
@@ -1167,4 +1190,146 @@ test "shorthand series single dash completes all flags" {
     try std.testing.expectEqualStrings("-v", result[0].value);
     try std.testing.expectEqualStrings("--output", result[1].value);
     try std.testing.expectEqualStrings("-o", result[2].value);
+}
+
+test "nonposix flag completion shows single dash longhand" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  -short, -long*: nonposix both
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "-" });
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    // addFlagCandidate emits longhand first, then shorthand
+    try std.testing.expectEqualStrings("-long", result[0].value);
+    try std.testing.expectEqualStrings("-short", result[1].value);
+}
+
+test "nonposix flag completion filters by prefix" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  -short, -long*: nonposix both
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "-lo" });
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqualStrings("-long", result[0].value);
+}
+
+test "nonposix flag completion shorthand prefix" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  -short, -long*: nonposix both
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "-sh" });
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqualStrings("-short", result[0].value);
+}
+
+test "nonposix flag value completion via equals" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  -styled=: nonposix shorthand
+        \\completion:
+        \\  flag:
+        \\    styled: [green, red]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "-styled=gr" });
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqualStrings("green", result[0].value);
+}
+
+test "nonposix flag value completion after space" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  -styled=: nonposix shorthand
+        \\completion:
+        \\  flag:
+        \\    styled: [green, red]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "-styled", "" });
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqualStrings("green", result[0].value);
+    try std.testing.expectEqualStrings("red", result[1].value);
+}
+
+test "nonposix flag traversal consumes value" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  -styled=: nonposix shorthand
+        \\completion:
+        \\  positionalany: [one, two, three]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "-styled", "green", "" });
+    try std.testing.expectEqual(@as(usize, 3), result.len);
+    try std.testing.expectEqualStrings("one", result[0].value);
+}
+
+test "nonposix optarg flag completion" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  -opt, -optarg?: both nonposix
+        \\completion:
+        \\  flag:
+        \\    optarg: [o1, o2, o3]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "-" });
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    // longhand emitted first, then shorthand
+    try std.testing.expectEqualStrings("-optarg", result[0].value);
+    try std.testing.expectEqualStrings("-opt", result[1].value);
+}
+
+test "nonposix mixed posix longhand" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  -short, --long: nonposix mixed
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "--" });
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqualStrings("--long", result[0].value);
+}
+
+test "nonposix mixed shorthand completion" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  -short, --long: nonposix mixed
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "-sh" });
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqualStrings("-short", result[0].value);
 }
