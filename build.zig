@@ -4,6 +4,10 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const options = b.addOptions();
+    options.addOption([]const u8, "version", "0.1.0");
+    const options_module = options.createModule();
+
     const exe = b.addExecutable(.{
         .name = "carapace-tiny",
         .root_module = b.createModule(.{
@@ -12,6 +16,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    exe.root_module.addImport("build_options", options_module);
 
     b.installArtifact(exe);
 
@@ -27,6 +32,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    tests.root_module.addImport("build_options", options_module);
 
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run tests");

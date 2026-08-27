@@ -1,5 +1,8 @@
 const std = @import("std");
 const traverse = @import("../traverse.zig");
+const build_options = @import("build_options");
+
+const version_string = build_options.version ++ "-tiny";
 
 fn writeJsonString(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []const u8) !void {
     for (s) |c| {
@@ -19,7 +22,11 @@ pub fn formatOutput(allocator: std.mem.Allocator, candidates: []traverse.Candida
 
     try buf.appendSlice(allocator,
         \\{
-        \\  "version": "0.1.0",
+        \\  "version": "
+    );
+    try buf.appendSlice(allocator, version_string);
+    try buf.appendSlice(allocator,
+        \\",
         \\  "messages": [],
         \\  "nospace": "",
         \\  "usage": "",
