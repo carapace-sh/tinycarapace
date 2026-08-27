@@ -9,12 +9,179 @@ const dash = @import("shell/dash.zig");
 const export_shell = @import("shell/export.zig");
 const action = @import("action.zig");
 
+/// Execute a command's `run` field.
+/// Supports: alias strings, macro ($(...)), and scripts (#!/...)
+fn runCommand(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, extra_args: *const std.ArrayList([]const u8), environ_map: ?*const std.process.Environ.Map) !u8 {
+    const run = cmd.run;
+
+    // Script mode: starts with #!
+    if (run.len >= 2 and run[0] == '#' and run[1] == '!') {
+        // Write script to temp file, make executable, run it
+        const tmp_dir = if (environ_map) |env| env.get("TMPDIR") orelse "/tmp" else "/tmp";
+        const script_path = try std.fs.path.join(allocator, &.{ tmp_dir, "tinycarapace-run.sh" });
+        defer allocator.free(script_path);
+
+        var script_file = std.Io.Dir.cwd().createFile(io, script_path, .{ .exclusive = false }) catch {
+            std.debug.print("error: cannot create temp script\n", .{});
+            return 1;
+        };
+        try script_file.writeStreamingAll(io, run);
+        script_file.close(io);
+
+        // Build argv: sh script_path <extra_args>
+        var argv = std.ArrayList([]const u8).empty;
+        try argv.append(allocator, "sh");
+        try argv.append(allocator, script_path);
+        for (extra_args.items) |a| try argv.append(allocator, a);
+
+        const result = std.process.run(allocator, io, .{
+            .argv = argv.items,
+            .stdout_limit = .limited(1024 * 1024),
+            .stderr_limit = .limited(1024 * 1024),
+            .environ_map = environ_map,
+        }) catch |err| {
+            std.debug.print("error: script execution failed: {s}\n", .{@errorName(err)});
+            return 1;
+        };
+        std.Io.File.stdout().writeStreamingAll(io, result.stdout) catch {};
+        if (result.stderr.len > 0) std.Io.File.stderr().writeStreamingAll(io, result.stderr) catch {};
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
+
+        // Clean up temp file
+        std.Io.Dir.cwd().deleteFile(io, script_path) catch {};
+        return 0;
+    }
+
+    // Macro mode: starts with $(
+    if (run.len >= 2 and run[0] == '$' and run[1] == '(') {
+        if (run[run.len - 1] == ')') {
+            const command = run[2 .. run.len - 1];
+            if (command.len > 0) {
+                // Expand variables in the command
+                var flag_values = std.StringHashMap([]const u8).init(allocator);
+                var positional_args = std.ArrayList([]const u8).empty;
+                for (extra_args.items, 0..) |a, i| {
+                    try positional_args.append(allocator, a);
+                    const key = try std.fmt.allocPrint(allocator, "C_ARG{d}", .{i});
+                    try flag_values.put(key, a);
+                }
+
+                const expanded = try traverse.expandVariables(allocator, command, &flag_values, positional_args.items, "");
+                defer allocator.free(expanded);
+
+                const result = std.process.run(allocator, io, .{
+                    .argv = &.{ "sh", "-c", expanded },
+                    .stdout_limit = .limited(1024 * 1024),
+                    .stderr_limit = .limited(1024 * 1024),
+                    .environ_map = environ_map,
+                }) catch |err| {
+                    std.debug.print("error: macro execution failed: {s}\n", .{@errorName(err)});
+                    return 1;
+                };
+                std.Io.File.stdout().writeStreamingAll(io, result.stdout) catch {};
+                if (result.stderr.len > 0) std.Io.File.stderr().writeStreamingAll(io, result.stderr) catch {};
+                allocator.free(result.stdout);
+                allocator.free(result.stderr);
+                return 0;
+            }
+        }
+    }
+
+    // Alias mode: JSON array string like "[tail, --lines, '${NUM:-1}']" or plain string like "tail -f"
+    // Parse as space-separated or JSON array
+    var argv = std.ArrayList([]const u8).empty;
+
+    if (run.len >= 2 and run[0] == '[') {
+        // JSON array format: parse it
+        const items = try parseRunArgs(allocator, run);
+        defer allocator.free(items);
+        for (items) |item| {
+            // Expand variables in each arg
+            var flag_values = std.StringHashMap([]const u8).init(allocator);
+            var positional_args = std.ArrayList([]const u8).empty;
+            for (extra_args.items, 0..) |a, i| {
+                try positional_args.append(allocator, a);
+                const key = try std.fmt.allocPrint(allocator, "C_ARG{d}", .{i});
+                try flag_values.put(key, a);
+            }
+            const expanded = try traverse.expandVariables(allocator, item, &flag_values, positional_args.items, "");
+            defer allocator.free(expanded);
+            try argv.append(allocator, expanded);
+        }
+    } else {
+        // Plain string: space-separated
+        var it = std.mem.splitScalar(u8, run, ' ');
+        while (it.next()) |part| {
+            const trimmed = std.mem.trim(u8, part, " \t");
+            if (trimmed.len > 0) {
+                try argv.append(allocator, try allocator.dupe(u8, trimmed));
+            }
+        }
+    }
+
+    // Append extra args
+    for (extra_args.items) |a| try argv.append(allocator, a);
+
+    if (argv.items.len == 0) {
+        std.debug.print("error: empty run command\n", .{});
+        return 1;
+    }
+
+    const result = std.process.run(allocator, io, .{
+        .argv = argv.items,
+        .stdout_limit = .limited(1024 * 1024),
+        .stderr_limit = .limited(1024 * 1024),
+        .environ_map = environ_map,
+    }) catch |err| {
+        std.debug.print("error: command execution failed: {s}\n", .{@errorName(err)});
+        return 1;
+    };
+    std.Io.File.stdout().writeStreamingAll(io, result.stdout) catch {};
+    if (result.stderr.len > 0) std.Io.File.stderr().writeStreamingAll(io, result.stderr) catch {};
+    allocator.free(result.stdout);
+    allocator.free(result.stderr);
+    return 0;
+}
+
+/// Parse a JSON array of string arguments: `[tail, --lines, '${NUM:-1}']`
+fn parseRunArgs(allocator: std.mem.Allocator, src: []const u8) ![]const []const u8 {
+    const trimmed = std.mem.trim(u8, src, " \t");
+    if (trimmed.len < 2 or trimmed[0] != '[' or trimmed[trimmed.len - 1] != ']') return &.{};
+    const inner = std.mem.trim(u8, trimmed[1 .. trimmed.len - 1], " \t");
+    if (inner.len == 0) return &.{};
+
+    var items = std.ArrayList([]const u8).empty;
+    var i: usize = 0;
+    while (i < inner.len) {
+        while (i < inner.len and (inner[i] == ' ' or inner[i] == '\t' or inner[i] == ',')) : (i += 1) {}
+        if (i >= inner.len) break;
+
+        if (inner[i] == '"' or inner[i] == '\'') {
+            const quote = inner[i];
+            i += 1;
+            const start = i;
+            while (i < inner.len and inner[i] != quote) {
+                if (inner[i] == '\\' and i + 1 < inner.len) i += 2 else i += 1;
+            }
+            try items.append(allocator, try allocator.dupe(u8, inner[start..i]));
+            if (i < inner.len) i += 1;
+        } else {
+            const start = i;
+            while (i < inner.len and inner[i] != ',' and inner[i] != ']' and inner[i] != ' ') : (i += 1) {}
+            const raw = std.mem.trim(u8, inner[start..i], " \t");
+            if (raw.len > 0) try items.append(allocator, try allocator.dupe(u8, raw));
+        }
+    }
+    return items.toOwnedSlice(allocator);
+}
+
 pub fn main(init: std.process.Init) !u8 {
     const allocator = init.gpa;
 
     const argv = init.minimal.args.vector;
     if (argv.len < 2) {
-        std.debug.print("usage: carapace-tiny _carapace [bash] | <name> (bash|export) [<name> <args...>]\n", .{});
+        std.debug.print("usage: carapace-tiny _carapace [bash] | <name> (bash|run|export|--dash-repl) [<name> <args...>]\n", .{});
         return 1;
     }
 
@@ -135,6 +302,44 @@ pub fn main(init: std.process.Init) !u8 {
         }
     }
 
+    // carapace-tiny <name> run [<args...>]
+    if (argv.len >= 3 and std.mem.eql(u8, std.mem.span(argv[2]), "run")) {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+
+        const specs = try spec.discoverSpecs(init.io, init.environ_map, arena.allocator());
+        const spec_info = spec.findSpec(specs, name) orelse {
+            std.debug.print("error: unknown command: {s}\n", .{name});
+            return 1;
+        };
+
+        const content = std.Io.Dir.cwd().readFileAlloc(init.io, spec_info.path, allocator, .limited(1024 * 1024)) catch {
+            std.debug.print("error: cannot read spec file: {s}\n", .{spec_info.path});
+            return 1;
+        };
+        defer allocator.free(content);
+
+        const cmd = spec.loadSpec(arena.allocator(), content) catch |err| {
+            std.debug.print("error: cannot parse spec: {s}\n", .{@errorName(err)});
+            return 1;
+        };
+
+        if (cmd.run.len == 0) {
+            std.debug.print("error: no run field in spec\n", .{});
+            return 1;
+        }
+
+        // Collect extra args from command line
+        var extra_args: std.ArrayList([]const u8) = .empty;
+        if (argv.len > 3) {
+            for (argv[3..]) |a| {
+                try extra_args.append(arena.allocator(), std.mem.span(a));
+            }
+        }
+
+        return try runCommand(arena.allocator(), init.io, cmd, &extra_args, init.environ_map);
+    }
+
     // carapace-tiny <name> --dash-repl
     if (argv.len >= 3 and std.mem.eql(u8, std.mem.span(argv[2]), "--dash-repl")) {
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -176,4 +381,21 @@ test {
     _ = @import("shell/powershell.zig");
     _ = @import("shell/dash.zig");
     _ = @import("shell/export.zig");
+}
+
+test "parse run args" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const args = try parseRunArgs(arena.allocator(), "[tail, --lines, '${NUM:-1}']");
+    try std.testing.expectEqual(@as(usize, 3), args.len);
+    try std.testing.expectEqualStrings("tail", args[0]);
+    try std.testing.expectEqualStrings("--lines", args[1]);
+    try std.testing.expectEqualStrings("${NUM:-1}", args[2]);
+}
+
+test "parse run args empty" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const args = try parseRunArgs(arena.allocator(), "[]");
+    try std.testing.expectEqual(@as(usize, 0), args.len);
 }
