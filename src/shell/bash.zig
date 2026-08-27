@@ -2,10 +2,45 @@ const std = @import("std");
 const spec = @import("../spec.zig");
 const traverse = @import("../traverse.zig");
 
-pub fn generateSnippet(allocator: std.mem.Allocator, cmd: spec.Command, spec_path: []const u8) ![]const u8 {
+pub fn generateInitScript(allocator: std.mem.Allocator, specs: []const spec.SpecInfo) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
+    const exe = "carapace-tiny";
 
-    const name = cmd.name;
+    try buf.print(allocator,
+        \\_carapace_completer() {{
+        \\  export COMP_LINE
+        \\  export COMP_POINT
+        \\  export COMP_TYPE
+        \\
+        \\  local command="${{COMP_WORDS[0]}}" data compline="${{COMP_LINE:0:${{COMP_POINT}}}}"
+        \\
+        \\  data=$(echo "${{compline}}''" | xargs {s} "${{command}}" bash 2>/dev/null)
+        \\  if [ $? -eq 1 ]; then
+        \\    data=$(echo "${{compline}}'" | xargs {s} "${{command}}" bash 2>/dev/null)
+        \\    if [ $? -eq 1 ]; then
+        \\      data=$(echo "${{compline}}\"" | xargs {s} "${{command}}" bash 2>/dev/null)
+        \\    fi
+        \\  fi
+        \\
+        \\  COMPREPLY=()
+        \\  while IFS= read -r line; do
+        \\    [ -n "$line" ] && COMPREPLY+=("$line")
+        \\  done <<< "$data"
+        \\}}
+        \\
+    , .{ exe, exe, exe });
+
+    try buf.appendSlice(allocator, "complete -o noquote -F _carapace_completer");
+    for (specs) |s| {
+        try buf.print(allocator, " {s}", .{s.name});
+    }
+    try buf.appendSlice(allocator, "\n\n");
+
+    return buf.toOwnedSlice(allocator);
+}
+
+pub fn generateSnippet(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
     const exe = "carapace-tiny";
     const func_prefix = "carapace_tiny";
 
@@ -13,11 +48,11 @@ pub fn generateSnippet(allocator: std.mem.Allocator, cmd: spec.Command, spec_pat
         \\_{s}_{s}_completion() {{
         \\  local compline="${{COMP_LINE:0:${{COMP_POINT}}}}"
         \\  local data
-        \\  data=$(echo "${{compline}}''" | xargs -- {s} '{s}' _complete bash 2>/dev/null)
+        \\  data=$(echo "${{compline}}''" | xargs {s} '{s}' bash 2>/dev/null)
         \\  if [ $? -ne 0 ]; then
-        \\    data=$(echo "${{compline}}'" | xargs -- {s} '{s}' _complete bash 2>/dev/null)
+        \\    data=$(echo "${{compline}}'" | xargs {s} '{s}' bash 2>/dev/null)
         \\    if [ $? -ne 0 ]; then
-        \\      data=$(echo "${{compline}}\"" | xargs -- {s} '{s}' _complete bash 2>/dev/null)
+        \\      data=$(echo "${{compline}}\"" | xargs {s} '{s}' bash 2>/dev/null)
         \\    fi
         \\  fi
         \\  COMPREPLY=()
@@ -27,7 +62,7 @@ pub fn generateSnippet(allocator: std.mem.Allocator, cmd: spec.Command, spec_pat
         \\}}
         \\complete -o noquote -F _{s}_{s}_completion {s}
         \\
-    , .{ func_prefix, name, exe, spec_path, exe, spec_path, exe, spec_path, func_prefix, name, name });
+    , .{ func_prefix, name, exe, name, exe, name, exe, name, func_prefix, name, name });
 
     return buf.toOwnedSlice(allocator);
 }
@@ -48,18 +83,27 @@ pub fn formatOutput(allocator: std.mem.Allocator, candidates: []traverse.Candida
     return buf.toOwnedSlice(allocator);
 }
 
-test "snippet contains function name" {
-    const yaml_src =
-        \\name: mycmd
-        \\flags:
-        \\  --verbose: verbose
-    ;
+test "init script contains completers" {
+    const specs = [_]spec.SpecInfo{
+        .{ .name = "chmod", .path = "/tmp/chmod.yaml" },
+        .{ .name = "git", .path = "/tmp/git.yaml" },
+    };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const cmd = try @import("../spec.zig").loadSpec(arena.allocator(), yaml_src);
-    const snippet = try generateSnippet(arena.allocator(), cmd, "/tmp/spec.yaml");
+    const script = try generateInitScript(arena.allocator(), specs[0..]);
+    try std.testing.expect(std.mem.indexOf(u8, script, "_carapace_completer") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "complete") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "chmod") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "git") != null);
+}
+
+test "snippet contains function name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const snippet = try generateSnippet(arena.allocator(), "mycmd");
     try std.testing.expect(std.mem.indexOf(u8, snippet, "_carapace_tiny_mycmd_completion") != null);
     try std.testing.expect(std.mem.indexOf(u8, snippet, "complete") != null);
+    try std.testing.expect(std.mem.indexOf(u8, snippet, "mycmd") != null);
 }
 
 test "format output" {

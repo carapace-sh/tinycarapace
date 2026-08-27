@@ -238,15 +238,15 @@ are offered together.
 
 ### Snippet
 
-Generated when invoked as `carapace-tiny spec.yaml` (no extra args):
+Generated when invoked as `carapace-tiny <name> bash` (no completion args):
 
 ```bash
 _carapace_tiny_<name>_completion() {
   local compline="${COMP_LINE:0:${COMP_POINT}}"
   local data
-  data=$(echo "${compline}''" | xargs -- carapace-tiny '<specpath>' _complete bash 2>/dev/null)
-  [ $? -ne 0 ] && data=$(echo "${compline}'" | xargs -- carapace-tiny '<specpath>' _complete bash 2>/dev/null)
-  [ $? -ne 0 ] && data=$(echo "${compline}\"" | xargs -- carapace-tiny '<specpath>' _complete bash 2>/dev/null)
+  data=$(echo "${compline}''" | xargs -- carapace-tiny '<name>' bash 2>/dev/null)
+  [ $? -ne 0 ] && data=$(echo "${compline}'" | xargs -- carapace-tiny '<name>' bash 2>/dev/null)
+  [ $? -ne 0 ] && data=$(echo "${compline}\"" | xargs -- carapace-tiny '<name>' bash 2>/dev/null)
   COMPREPLY=()
   while IFS= read -r line; do
     [ -n "$line" ] && COMPREPLY+=("$line")
@@ -433,7 +433,7 @@ Enter to run. This is genuinely useful in a container.
 - [ ] `src/traverse.zig`: Argument classification state machine
 - [ ] `src/action.zig`: Static values + shell macros (`$sh`, `$bash`, `$files`, `$directories`)
 - [ ] `src/shell/bash.zig`: Snippet generation + output formatting
-- [ ] `src/main.zig`: CLI — `carapace-tiny <spec.yaml>` → snippet, `carapace-tiny <spec.yaml> _complete bash <args...>` → candidates
+- [ ] `src/main.zig`: CLI — `carapace-tiny _carapace [bash]` → init script, `carapace-tiny <name> bash` → snippet, `carapace-tiny <name> bash <name> <args...>` → candidates
 - [ ] `example/example.yaml`: Test spec with flags, subcommands, static + dynamic completion
 - [ ] `test/traverse_test.zig`: Table-driven tests using `std.testing`
 
@@ -498,19 +498,23 @@ populated. This requires bash to be installed (skip if not, using
 ## CLI Interface
 
 ```
-# Generate bash completion snippet (source this)
-carapace-tiny spec.yaml
+# Generate bash init script for all specs (source this)
+carapace-tiny _carapace bash
+# → prints bash init script to stdout
+
+# Generate bash completion snippet for a single command
+carapace-tiny <name> bash
 # → prints bash snippet to stdout
 
 # Internal completion callback (invoked by the snippet)
-carapace-tiny spec.yaml _complete bash <args...>
+carapace-tiny <name> bash <name> <args...>
 # → prints newline-delimited candidates
 
 # (Phase 2) Interactive dash REPL with completion
-carapace-tiny spec.yaml --dash-repl
+carapace-tiny <name> --dash-repl
 ```
 
-The `_complete` subcommand is the internal protocol — users never call it
+The `bash` subcommand is the internal protocol — users never call it
 directly. The snippet handles it.
 
 ---

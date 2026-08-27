@@ -22,14 +22,14 @@ zig build -Dtarget=aarch64-linux-musl
 
 ```
 src/
-├── main.zig       # CLI entry: `carapace-tiny spec.yaml` (snippet) or `_complete bash <args>` (candidates)
-├── spec.zig       # Command/Flag/Completion types + YAML → struct decode
+├── main.zig       # CLI entry: `_carapace` (init) or `<name> bash` (snippet/completions)
+├── spec.zig       # Command/Flag/Completion types + YAML → struct decode + SpecInfo/discovery
 ├── yaml.zig       # ~676 LOC hand-written YAML subset parser (recursive descent, no deps)
 ├── flag.zig       # Flag string parser (compact syntax: --optarg?=, --repeatable*, --hidden&)
 ├── traverse.zig   # Argument traversal state machine (the core completion engine)
 ├── action.zig     # Macro resolution stub (currently only returns static values, no macros)
 └── shell/
-    └── bash.zig   # Snippet generation + output formatting
+    └── bash.zig   # Init script, snippet generation + output formatting
 ```
 
 ## Architecture
@@ -40,17 +40,30 @@ src/
 4. **Output** (`shell/bash.zig`) → format candidates or generate bash `complete -F` snippet
 
 ```
-spec.yaml → yaml.zig (parse) → spec.zig (decode) → traverse.zig (complete) → bash.zig (format)
+CARAPACE_SPECS env → spec.zig (discover) → bash.zig (init snippet) → bash compgen
+                       ↓
+                    yaml.zig (parse) → spec.zig (decode) → traverse.zig (complete) → bash.zig (format)
 ```
 
 ## CLI Interface
 
 ```bash
-# Generate bash completion snippet (source this)
-carapace-tiny spec.yaml
+# Generate bash init script for all specs in CARAPACE_SPECS env var
+# (source this to register all completers)
+carapace-tiny _carapace [bash]
 
-# Internal completion callback (invoked by the snippet)
-carapace-tiny spec.yaml _complete bash <args...>
+# Generate bash completion snippet for a single command
+# (source this to register one completer)
+carapace-tiny <name> bash
+
+# Completion callback — invoked by the bash snippet
+# Provides completions for the given command's spec
+carapace-tiny <name> bash <name> <args...>
+```
+
+The `CARAPACE_SPECS` environment variable is a colon-separated list of `name=path` pairs:
+```bash
+export CARAPACE_SPECS="chmod=/path/to/chmod.yaml:git=/path/to/git.yaml"
 ```
 
 ## Key Patterns & Gotchas
@@ -61,8 +74,8 @@ This codebase uses the **new Zig 0.16 I/O API** (`std.process.Init`, `std.Io`, `
 
 ### Memory Management
 
-- **One `ArenaAllocator` per completion invocation** in `main.zig` (line 24-25)
-- Inside `loadSpec()`, a **second ArenaAllocator** is created (line 59) — the caller's arena is only used indirectly. This is a nested arena pattern: the inner arena is freed by `defer arena.deinit()` in `loadSpec`, but the returned `Command` struct borrows from it. The caller's arena keeps the result alive.
+- **Arena per completion invocation** in `main.zig` (line 62-63)
+- Inside `loadSpec()`, a **second ArenaAllocator** is created (line 75) — the caller's arena is only used indirectly. This is a nested arena pattern: the inner arena is freed by `defer arena.deinit()` in `loadSpec`, but the returned `Command` struct borrows from it. The caller's arena keeps the result alive.
 - `std.ArrayList(T).empty` is used instead of `std.ArrayList(T).init(allocator)` — this is `@TypeOf(.empty)` pattern where the allocator is passed separately to `append()`.
 
 ### YAML Parser Limitations
@@ -112,8 +125,9 @@ Examples: `--output=`, `--optarg?=`, `--repeatable*`, `-v`, `-o, --output=`
 
 ### Bash Snippet
 
-- Function name: `_carapace_tiny_<name>_completion`
-- Uses `xargs --` to pass the command line safely
+- **Init script** (`_carapace`): function name `_carapace_completer`, registers all specs from `CARAPACE_SPECS` via `complete -o noquote -F _carapace_completer <name>...`
+- **Single spec** (`<name> bash`): function name `_carapace_tiny_<name>_completion`, registers one command
+- Both use `xargs --` to pass the command line safely
 - Three-stage open-quote retry (single quotes, then double quotes, then none)
 - `complete -o noquote -F` — no `-o nospace` (POC always appends space)
 - Descriptions shown only when `COMP_TYPE` is `63` (successive tab)
@@ -124,7 +138,7 @@ Examples: `--output=`, `--optarg?=`, `--repeatable*`, `-v`, `-o, --output=`
 - All tests are inline in source files using `std.testing.*`
 - Arena allocator pattern: `var arena = std.heap.ArenaAllocator.init(std.testing.allocator); defer arena.deinit();`
 - Tests call completion functions directly with parsed specs (no subprocess)
-- Tests are in: `yaml.zig` (10 tests), `flag.zig` (6 tests), `spec.zig` (1 test), `traverse.zig` (4 tests), `bash.zig` (2 tests), `main.zig` (1 test — just imports)
+- Tests are in: `yaml.zig` (10 tests), `flag.zig` (6 tests), `spec.zig` (1 test), `traverse.zig` (4 tests), `bash.zig` (4 tests), `main.zig` (1 test — just imports)
 - `zig build test` exits with code 0 on success, errors on failure
 
 ### Non-Obvious

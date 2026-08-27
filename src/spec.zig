@@ -55,6 +55,38 @@ pub const Command = struct {
     }
 };
 
+pub const SpecInfo = struct {
+    name: []const u8,
+    path: []const u8,
+};
+
+pub fn discoverSpecs(src: []const u8, allocator: std.mem.Allocator) ![]SpecInfo {
+    if (src.len == 0) return &.{};
+
+    var specs = std.ArrayList(SpecInfo).empty;
+    var it = std.mem.splitScalar(u8, src, ':');
+    while (it.next()) |pair| {
+        if (std.mem.indexOfScalar(u8, pair, '=')) |eq| {
+            const name = std.mem.trim(u8, pair[0..eq], " \t");
+            const path = std.mem.trim(u8, pair[eq + 1 ..], " \t");
+            if (name.len > 0 and path.len > 0) {
+                try specs.append(allocator, .{
+                    .name = try allocator.dupe(u8, name),
+                    .path = try allocator.dupe(u8, path),
+                });
+            }
+        }
+    }
+    return specs.toOwnedSlice(allocator);
+}
+
+pub fn findSpec(specs: []SpecInfo, name: []const u8) ?SpecInfo {
+    for (specs) |s| {
+        if (std.mem.eql(u8, s.name, name)) return s;
+    }
+    return null;
+}
+
 pub fn loadSpec(allocator: std.mem.Allocator, src: []const u8) !Command {
     var arena = std.heap.ArenaAllocator.init(allocator);
     const val = try yaml.parse(arena.allocator(), src);
