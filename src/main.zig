@@ -5,6 +5,7 @@ const bash = @import("shell/bash.zig");
 const zsh = @import("shell/zsh.zig");
 const fish = @import("shell/fish.zig");
 const powershell = @import("shell/powershell.zig");
+const dash = @import("shell/dash.zig");
 const export_shell = @import("shell/export.zig");
 const action = @import("action.zig");
 
@@ -134,6 +135,31 @@ pub fn main(init: std.process.Init) !u8 {
         }
     }
 
+    // carapace-tiny <name> --dash-repl
+    if (argv.len >= 3 and std.mem.eql(u8, std.mem.span(argv[2]), "--dash-repl")) {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+
+        const specs = try spec.discoverSpecs(init.io, init.environ_map, arena.allocator());
+        const spec_info = spec.findSpec(specs, name) orelse {
+            std.debug.print("error: unknown command: {s}\n", .{name});
+            return 1;
+        };
+
+        const content = std.Io.Dir.cwd().readFileAlloc(init.io, spec_info.path, allocator, .limited(1024 * 1024)) catch {
+            std.debug.print("error: cannot read spec file: {s}\n", .{spec_info.path});
+            return 1;
+        };
+        defer allocator.free(content);
+
+        const cmd = spec.loadSpec(arena.allocator(), content) catch |err| {
+            std.debug.print("error: cannot parse spec: {s}\n", .{@errorName(err)});
+            return 1;
+        };
+
+        return try dash.runRepl(arena.allocator(), init.io, cmd, init.environ_map);
+    }
+
     std.debug.print("error: unknown command: {s}\n", .{name});
     return 1;
 }
@@ -148,5 +174,6 @@ test {
     _ = @import("shell/zsh.zig");
     _ = @import("shell/fish.zig");
     _ = @import("shell/powershell.zig");
+    _ = @import("shell/dash.zig");
     _ = @import("shell/export.zig");
 }
