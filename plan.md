@@ -1,121 +1,44 @@
-# carapace-tiny — Plan
+# tinycarapace — Plan
 
-A minimal carapace-spec interpreter for resource-constrained environments
-(docker containers, alpine, scratch images, embedded shells). It reads the same
-YAML spec format as [carapace-spec](https://github.com/carapace-sh/carapace-spec)
-and provides shell completion — primarily **bash**, with a stretch goal of a
-**minimal custom readline menu for dash** (which lacks programmable completion).
+A minimal [carapace-spec](https://github.com/carapace-sh/carapace-spec) interpreter
+for resource-constrained environments (docker containers, alpine, scratch images).
+It reads the same YAML spec format and provides shell completion.
 
-**Implemented in [Zig](https://ziglang.org).**
-
-## Goals
-
-- **Small**: single static binary, no external dependencies. Zig produces
-  tiny static binaries with no runtime — ideal for containers and scratch
-  images. The whole point is to shed the ~30 MB transitive dependency graph
-  of carapace/carapace-spec (Go + cobra + pflag + yaml.v3 + carapace).
-- **Spec-compatible**: accepts the subset of the carapace-spec YAML format
-  needed for static and dynamic flag/subcommand/positional completion.
-- **Bash first**: generates a `complete -F` snippet just like carapace does,
-  but vastly simplified (no COMP_WORDBREAKS re-lexing, no redirect patching,
-  no partial-completion workaround — those are nice-to-haves for later).
-- **POC scope**: static values, dynamic shell macros (`$sh(...)`, `$bash(...)`),
-  flag completion, subcommand traversal, positional/positionalany completion.
-  No styles, no multipart, no modifiers, no codegen, no run mode, no bridges.
-
-## Non-Goals (for the POC)
-
-- cobra/pflag integration — we do our own arg parsing.
-- carapace-pflag fork features (non-POSIX flags, nargs, longhand shorthands).
-- Styles/colors (bash doesn't support per-candidate styling anyway).
-- Modifier chains (` ||| ` delimiter).
-- Multipart completion, caching, UIDs, tags.
-- Codegen (converting specs to source code).
-- Run mode (executing the spec as a command).
-- Shells other than bash for the POC (zsh/fish later).
-
----
+**Language**: Zig 0.16.0+. **Status**: Phase 1 complete (core + bash + modifiers).
 
 ## Why Zig
 
-| Concern | Go (carapace-spec) | Zig (carapace-tiny) |
+| Concern | Go (carapace-spec) | Zig (tinycarapace) |
 |---------|--------------------|--------------------|
 | Binary size (static, stripped) | ~15 MB | **<500 KB** |
 | Runtime | Go runtime + GC | None (bare metal) |
-| YAML parsing | `gopkg.in/yaml.v3` (pure Go, ~50k LOC transitive) | Hand-written subset parser (~300 lines) |
+| YAML parsing | `gopkg.in/yaml.v3` (~50k LOC transitive) | Hand-written subset parser (~700 LOC) |
 | Cross-compile | `GOOS=linux GOARCH=amd64` | `zig build -Dtarget=x86_64-linux-musl` |
 | Static linking | Requires CGO_ENABLED=0, still pulls runtime | Default — no dynamic linking ever |
-| Syscalls (for dash readline) | `syscall` package, indirect | Direct `linux.v*` stdlib wrappers |
-- Zig's `comptime` and tagged unions map cleanly to the spec's optional/sum-type fields.
-- Zig has no hidden allocations — the allocator is explicit, so we can use an arena for the whole completion invocation and free everything in one call. This matters for a tool invoked on every TAB press.
-- Zig cross-compiles to any target from a single toolchain — no cross-compiler setup needed. `zig build -Dtarget=aarch64-linux-musl` just works.
+| Allocator | GC | Explicit arena — free on every TAB press |
 
----
-
-## YAML Parsing
-
-Zig stdlib has **no YAML parser**. Options:
-
-| Approach | Pros | Cons | Decision |
-|----------|------|------|----------|
-| Hand-written subset parser | Zero deps, ~300 LOC, parse only what we need | We maintain it | **✅ Chosen** |
-| Use a Zig YAML library (e.g. `zig-yaml`) | Full YAML support | External dep, overkill for our subset, may be unmaintained | ❌ |
-| Convert spec to JSON at build time | Trivial parsing | Changes the user workflow | ❌ |
-
-The carapace-spec YAML subset is simple: maps, lists, scalars, flow-style
-sequences (`[a, b, c]`), and block-style. No anchors, no multi-document, no
-complex tags. A recursive-descent parser handling indentation-based blocks
-and flow collections is straightforward in Zig with a small tokenizer.
-
-### Parser structure
-
-```
-Tokenizer → Token stream → Parser → Spec struct (arena-allocated)
-```
-
-Token types: `scalar`, `map_key`, `seq_entry`, `flow_seq_start`, `flow_seq_end`,
-`flow_map_start`, `flow_map_end`, `flow_sep`, `newline`, `eof`.
-
-The parser produces a tagged union tree (like `std.json.Value` but for our
-subset), then we decode it into typed `Spec` / `Command` / `Flag` structs
-with a small `decode` helper that mirrors `yaml.v3`'s `Unmarshal` for our
-field set.
-
----
+Cross-compile to any target from a single toolchain — no cross-compiler setup needed.
 
 ## Architecture
 
 ```
-┌────────────────┐     ┌──────────────────┐     ┌──────────────────┐
-│  spec.yaml     │────▶│  carapace-tiny     │────▶│  completion      │
-│ (carapace-spec │     │  - parse YAML     │     │  candidates      │
-│  subset)       │     │  - traverse tree  │     │  (newline-       │
-└────────────────┘     │  - resolve macros │     │   delimited)     │
-                       │  - format output  │     └──────────────────┘
-                       └──────────────────┘
+spec.yaml → yaml.zig (parse) → spec.zig (decode) → traverse.zig (complete) → shell/*.zig (format)
 ```
 
 ### Source layout
 
 ```
-carapace-tiny/
-├── plan.md                  ← this file
-├── build.zig                ← build script (cross-compile targets)
-├── build.zig.zon            ← dependency manifest (empty — no deps)
-├── src/
-│   ├── main.zig             ← CLI entry point
-│   ├── spec.zig             ← Spec/Command/Flag types + decode
-│   ├── yaml.zig             ← hand-written YAML subset parser
-│   ├── flag.zig             ← flag string parsing (regex-equivalent)
-│   ├── traverse.zig         ← argument traversal state machine
-│   ├── action.zig           ← static value + macro resolution
-│   └── shell/
-│       ├── bash.zig         ← bash snippet + output formatting
-│       └── dash.zig         ← (stretch) dash readline menu
-├── example/
-│   └── example.yaml         ← test spec
-└── test/
-    └── traverse_test.zig    ← table-driven completion tests
+src/
+├── main.zig       # CLI entry: snippet, candidates, export
+├── spec.zig       # Command/Flag/Completion types + YAML → struct decode
+├── yaml.zig       # Hand-written YAML subset parser (recursive descent, no deps)
+├── flag.zig       # Flag string parser (compact syntax: --optarg?=, --repeatable*, --hidden&)
+├── traverse.zig   # Argument traversal state machine (the core completion engine)
+├── action.zig     # Static value + macro resolution (shell exec, modifier chains)
+└── shell/
+    ├── bash.zig   # Snippet generation + output formatting
+    ├── zsh.zig    # (not yet) zsh compdef snippet
+    └── fish.zig   # (not yet) fish complete snippet
 ```
 
 ### Memory management
@@ -123,297 +46,328 @@ carapace-tiny/
 - One `std.heap.ArenaAllocator` per completion invocation.
 - All spec parsing, traversal, and candidate generation allocates from the arena.
 - Arena freed in one call after output is written.
-- The binary itself uses the system allocator (or page allocator on bare targets).
 
 ---
 
-## Spec Format Subset
+## Current State (Phase 1 — ✅ Complete)
 
-We support the fields needed for the POC. Anything not listed is ignored
-(not errored — forward-compatible).
+### Spec decoding
+| Field | Status |
+|-------|--------|
+| `name`, `description`, `aliases` | ✅ |
+| `commands` (subcommand tree) | ✅ |
+| `flags` / `persistentflags` | ✅ |
+| `completion.flag` | ✅ |
+| `completion.positional` / `positionalany` | ✅ |
+| `completion.dash` / `dashany` | ❌ |
+| `exclusiveflags` | ❌ |
+| `group` | ❌ |
+| `run` | ❌ Parsed but ignored |
+| `parsing` | ✅ `disabled` and `non-interspersed` |
+| `hidden` | ✅ |
 
-### Supported top-level / command fields
+### Flag parsing
+| Feature | Status |
+|---------|--------|
+| `--longhand` / `-s` / `-s, --longhand` | ✅ |
+| `=` (takes value) / `?` (optarg) | ✅ |
+| `*` (repeatable) / `!` (required) / `&` (hidden) | ✅ |
+| Non-POSIX mode (`NameAsShorthand`) | ✅ |
+| `nargs` / `default` extended fields | ❌ |
 
-| Field | Status | Notes |
-|-------|--------|-------|
-| `name` | ✅ | Command name (first token split on space for usage strings) |
-| `description` | ✅ | Short description |
-| `aliases` | ⚠️ | Parsed, used for subcommand matching but not completed |
-| `commands` | ✅ | Subcommand tree |
-| `flags` | ✅ | Local flags (compact string syntax) |
-| `persistentflags` | ✅ | Inherited by subcommands |
-| `completion.flag` | ✅ | `map[string][]string` — flag value completion |
-| `completion.positional` | ✅ | `[][]string` — per-position completion |
-| `completion.positionalany` | ✅ | `[]string` — fallback positional |
-| `completion.dash` | ❌ | Ignored in POC |
-| `completion.dashany` | ❌ | Ignored in POC |
-| `exclusiveflags` | ❌ | Ignored (no validation in completion) |
-| `run` | ❌ | Ignored (no run mode) |
-| `parsing` | ⚠️ | Only `disabled` honored (skip flag parsing) |
-| `hidden` | ✅ | Hidden subcommands/flags skipped in completion |
-| `group` | ❌ | Ignored |
+### Traversal engine
+| Feature | Status |
+|---------|--------|
+| Subcommand traversal (with alias matching) | ✅ |
+| `--flag=value` splitting | ✅ |
+| `--` dash disables flag parsing | ✅ |
+| POSIX shorthand chaining (`-abc`) | ✅ |
+| Subcommand + positional[0] batch completion | ✅ |
+| Persistent flags | ⚠️ Not inherited from ancestors |
+| `Context.flag_values` population | ❌ HashMap initialized but never written |
+| `COMP_WORDBREAKS` re-lexing | ❌ |
 
-### Flag syntax (reuse carapace-spec's regex)
+### Macros & actions
+| Feature | Status |
+|---------|--------|
+| Static values (`value`, `value\tdescription`, `value\tdescription\tstyle`) | ✅ |
+| `$sh(cmd)`, `$bash(cmd)`, `$pwsh(cmd)` | ✅ |
+| `$files`, `$directories`, `$executables` | ❌ |
+| `$(cmd)` shorthand for `$sh(cmd)` | ❌ |
+| `$spec(path)` — delegate to another spec | ❌ |
+| `$message(msg)` | ❌ |
+| Shell exec macros for other shells (`$fish`, `$zsh`, `$elvish`, `$nu`, `$osh`, `$xonsh`, `$cmd`) | ❌ Only `$sh`, `$bash`, `$pwsh` |
+| Variable expansion (`${C_ARG0}`, `${C_FLAG_NAME}`, `${C_VALUE}`, `${C_PART0}`) | ❌ |
 
-```
---longhand
--s, --longhand
---optarg?=
---repeatable*
---required!
---hidden&
-```
+### Modifier chains (` ||| ` delimiter)
+| Modifier | Status |
+|----------|--------|
+| `$prefix(text)` | ✅ |
+| `$suffix(text)` | ✅ |
+| `$nospace(chars)` | ✅ |
+| `$style(name)` | ✅ |
+| `$tag(name)` | ✅ |
+| `$filter([vals])` | ✅ |
+| `$retain([vals])` | ✅ |
+| `$chdir(dir)` | ❌ |
+| `$filterargs` | ❌ |
+| `$list(delim)` | ❌ |
+| `$multiparts([delim])` | ❌ |
+| `$noprefix(chars)` | ❌ |
+| `$shift(n)` | ❌ |
+| `$split` / `$splitp` | ❌ |
+| `$suppress(regex)` | ❌ |
+| `$uid([scheme, host, opts...])` | ❌ |
+| `$uniquelist(delim)` | ❌ |
+| `$usage(usage)` | ❌ |
 
-We parse these into a simple `Flag` struct. We do **not** need pflag — we only
-need to know: name, shorthand, whether it takes a value, whether it's an
-optarg, whether it's hidden. We don't actually parse flag *values* from the
-command line into typed storage; we just need to classify tokens during
-traversal.
+### Shell support
+| Shell | Init script | Snippet | Candidate output |
+|-------|-------------|---------|------------------|
+| bash | ✅ | ✅ | ✅ |
+| zsh | ❌ | ❌ | ❌ |
+| fish | ❌ | ❌ | ❌ |
+| powershell | ❌ | ❌ | ❌ |
+| elvish | ❌ | ❌ | ❌ |
+| Dash readline (stretch) | ❌ | ❌ | ❌ |
 
-### Completion value format
+### CLI
+| Mode | Status |
+|------|--------|
+| `tinycarapace spec.yaml` (snippet) | ✅ |
+| `tinycarapace spec.yaml _complete bash <name> <args...>` (candidates) | ✅ |
+| `tinycarapace _carapace bash` (init script) | ✅ |
+| `tinycarapace spec.yaml export` (shell-agnostic export) | ✅ |
+| `tinycarapace spec.yaml run` (run mode) | ❌ |
 
-Same as carapace-spec:
-- Plain string → `ActionValues(s)`
-- `value\tdescription` → value with description
-- `$macroname(args)` → dynamic completion (shell macro)
-
-### Supported macros (POC)
-
-| Macro | Behavior |
-|-------|----------|
-| `$files` / `$files([.go])` | List files in current dir, optionally filtered by extension |
-| `$directories` | List directories in current dir |
-| `$executables` | List executables in PATH |
-| `$sh(cmd)` | Run `sh -c 'cmd'` with args appended; parse newline output |
-| `$bash(cmd)` | Same with bash |
-| `$(cmd)` | Shorthand for `$sh(cmd)` |
-
-Modifiers (` ||| $chdir(...)` etc.) are **not** supported in the POC.
-
----
-
-## Traversal Engine
-
-A simplified version of carapace's `traverse()`. We walk the command tree
-classifying each argument:
-
-```
-state:
-  currentCmd    *Command   // resolved command (descends into subcommands)
-  inFlag        *Flag       // flag expecting a value (nil if none)
-  positionals   int         // count of positionals consumed
-  dash          bool        // "--" encountered
-```
-
-### Classification (per arg, left to right)
-
-1. **Flag argument** — if `inFlag != null`, consume arg as flag value, clear `inFlag`.
-2. **Dash** — if arg == `"--"`, set `dash = true`, skip flag parsing for rest.
-3. **Flag** — if arg starts with `-` and flag parsing not disabled:
-   - `--longhand` or `--longhand=value` → lookup longhand
-   - `-s` or `-svalue` or `-s value` → lookup shorthand
-   - If found and takes value: set `inFlag` (unless value attached via `=`)
-   - If not found: treat as positional (lenient)
-4. **Subcommand** — if arg matches a subcommand name (or alias) of `currentCmd`,
-   recurse: `currentCmd = subcommand`, reset positionals.
-5. **Positional** — increment `positionals`.
-
-### Completion decision (after traversal, on the last partial word)
-
-| Context | Complete |
-|---------|----------|
-| `inFlag` is set | `completion.flag[inFlag.name]` |
-| Last arg is `--flag=` (attached) | `completion.flag[flag.name]`, filtered by prefix after `=` |
-| Last arg starts with `-` | All non-hidden flags of `currentCmd` (+ persistent flags from ancestors) |
-| `dash` is true | `completion.dash[positionals]` or `dashany` (not in POC) |
-| `currentCmd` has subcommands and no positionals consumed | Subcommand names **+** `completion.positional[0]` (batch) |
-| Otherwise | `completion.positional[positionals]` or `positionalany` |
-
-This mirrors carapace's behavior where subcommands and the first positional
-are offered together.
+### Bash snippet features
+| Feature | Status |
+|---------|--------|
+| `complete -o noquote -F` | ✅ |
+| Three-stage open-quote retry (empty, single, double) | ✅ |
+| Nospace flag (`\x01` delimiter) | ✅ |
+| Descriptions on `COMP_TYPE == 63` | ✅ |
+| Portable `while read` loop (no `mapfile`) | ✅ |
+| `xargs --` for safe argument passing | ✅ |
 
 ---
 
-## Bash Shell Integration
+## Phase 2 — Core improvements
 
-### Snippet
+Small, focused additions to round out the core engine.
 
-Generated when invoked as `carapace-tiny <name> bash` (no completion args):
+### 2a — `completion.dash` / `completion.dashany`
 
-```bash
-_carapace_tiny_<name>_completion() {
-  local compline="${COMP_LINE:0:${COMP_POINT}}"
-  local data
-  data=$(echo "${compline}''" | xargs -- carapace-tiny '<name>' bash 2>/dev/null)
-  [ $? -ne 0 ] && data=$(echo "${compline}'" | xargs -- carapace-tiny '<name>' bash 2>/dev/null)
-  [ $? -ne 0 ] && data=$(echo "${compline}\"" | xargs -- carapace-tiny '<name>' bash 2>/dev/null)
-  COMPREPLY=()
-  while IFS= read -r line; do
-    [ -n "$line" ] && COMPREPLY+=("$line")
-  done <<< "$data"
-}
-complete -o noquote -F _carapace_tiny_<name>_completion <name>
-```
+- Add `dash: [][]string` and `dashany: []string` fields to `Completion` struct in `spec.zig`
+- Update `decodeCompletion` to parse them
+- In `traverse.zig:complete()`, when `dash` flag is set, complete from `completion.dash[positional_count]` or `completion.dashany`
+- Tests: add dash completion cases to `traverse.zig` tests
 
-Differences from carapace's snippet:
-- No `\001`-delimited nospace flag (POC always appends space).
-- No `mapfile` (use portable `while read` loop — works in bash 3.x).
-- Three-stage open-quote retry (kept — it's cheap and fixes the common case).
-- `xargs --` to handle the spec path safely.
+### 2b — Persistent flag inheritance
 
-### Output format
+- In `traverse.zig`, when looking up a flag, walk up the parent chain
+- Add a `parent` field to `Command` (set during spec decoding)
+- `cmd.findFlag(name)` tries `cmd.flags`, then `cmd.persistent_flags`, then recurses to `cmd.parent`
+- Tests: verify persistent flags from parent commands are completed
 
-Plain newline-delimited values, one per line. Descriptions are appended
-with a tab when `COMP_TYPE` indicates successive tabs (63) — same heuristic
-as carapace, but without the partial-completion prefix-collapse logic.
+### 2c — Flag value population
 
-```
---verbose
---output
-file1
-file2
-```
+- In `traverse.zig`, when a flag value is consumed (attached via `=` or as next arg), write to `Context.flag_values`
+- This enables future variable expansion (`${C_FLAG_NAME}`)
+- Tests: verify flag_values HashMap contains expected entries after traversal
 
-For described values in successive-tab mode:
-```
---verbose	Verbose output
---output	Output file
-```
+### 2d — `$files`, `$directories`, `$executables` macros
 
-### Quoting
+- In `action.zig`, add `resolveFiles(dir)`, `resolveDirectories(dir)`, `resolveExecutables()` functions
+- Use `std.fs.cwd().openDir`, `std.fs.Dir.iterate` to list directory contents
+- `$files([".go", ".md"])` filters by extension; `$files()` lists all files
+- `$directories` lists directories only
+- `$executables` scans PATH directories and lists executable files
+- Wire into `resolveMacro` dispatch
+- Tests: create temp dirs with known contents, verify correct candidates
 
-Minimal: backslash-escape spaces, quotes, and backslashes. No double-quote
-mode, no tilde handling in the POC. This covers the 90% case.
+### 2e — `$(cmd)` shorthand
+
+- In `resolveMacro`, detect empty macro name `$`: treat `$(cmd)` as `$sh(cmd)`
+- Simple: if macro name is empty string, delegate to `$sh` handler
+- Test: verify `$(echo one)` produces same result as `$sh(echo one)`
 
 ---
 
-## Dash Shell: Minimal Readline Completion Menu (Stretch Goal — Discussion)
+## Phase 3 — Extended macros
+
+### 3a — `$message(msg)`
+
+- Returns a single candidate with the message as a description (empty value)
+- Used for error/info display in the completion menu
+- In `resolveMacro`, detect `$message(msg)` and return a single candidate with empty value and the message as description
+
+### 3b — `$list(delim)` and `$uniquelist(delim)`
+
+- `$list(delim)` splits the current value by delimiter and completes the last segment
+- `$uniquelist(delim)` same but deduplicates existing segments
+- In `resolveMacro`, needs access to the current partial value (`C_VALUE`)
+- Implementation: split `context.value` by delimiter, filter candidates by last segment
+- For uniquelist: filter out already-used segments from candidates
+
+### 3c — `$chdir(dir)`
+
+- Changes directory before completing the next macro/value
+- Accepts special directory macros: `$gitdir`, `$gitworktree`, `$parent([file, dir])`, `$tempdir`, `$userhomedir`, `$usercachedir`, `$userconfigdir`, `$xdgcachehome`, `$xdgconfighome`, `$nixprofile`
+- Implementation: save current dir, change to target dir, resolve next macro, restore dir
+- POC level: just `$chdir($userhomedir)` and `$chdir($tempdir)` — the common cases
+
+### 3d — `$multiparts([delim])`
+
+- Splits the current value by the delimiter and completes the last segment
+- Like `$list` but uses `$nospace` semantics (no space after completion)
+- Implementation: similar to `$list`, but sets `nospace=true` on candidates
+- Delimiter typically `/` for path-style multipart
+
+### 3e — `$shift(n)`
+
+- Shifts positional arguments left by n positions
+- Used when a flag consumes multiple positional args (paired with `nargs`)
+- Implementation: decrements `positional_count` by n in the context
+- POC: only handle `$shift(1)` for single-arg consumption
+
+### 3f — `$noprefix(chars)`, `$suppress(regex)`, `$usage(usage)`, `$uid(...)`
+
+- `$noprefix(chars)`: don't add common prefix for values containing given chars
+- `$suppress(regex)`: filter out error messages matching regex
+- `$usage(usage)`: set a usage message for the current completion
+- `$uid(...)`: set UID for deduplication (no-op without dedup cache)
+- All straightforward: modify candidate fields or filter results
+
+### 3g — `$filterargs`
+
+- Filter completion candidates by already-completed positional args
+- Implementation: exclude candidates whose values match any consumed positional arg
+- Simple string comparison against `context.flag_values` or positional tracking
+
+### 3h — `$split` / `$splitp`
+
+- `$split`: split current value lexicographically, complete each segment independently
+- `$splitp`: same with pipeline support (`|` separator)
+- Advanced: requires multi-word completion semantics
+- POC: skip unless needed
+
+---
+
+## Phase 4 — Shell support (bash+, zsh, fish, powershell)
+
+### 4a — Bash improvements
+
+- `COMP_WORDBREAKS` re-lexing: handle `=` and `:` as word separators in the command line
+- Current: `xargs` splits on spaces only — `--flag=value` is one token, but bash splits it
+- Implementation: re-lex `COMP_LINE` using `COMP_WORDBREAKS` characters as delimiters (like carapace does)
+- This is the main source of bugs in the current bash snippet
+
+### 4b — zsh completion
+
+- `src/shell/zsh.zig`: generate `compdef` + `_describe` snippet
+- Output format: `_describe 'command' '(...)'` for static values, `_call_program` for macros
+- Candidate output format: same newline-delimited as bash, but zsh-specific quoting
+- Init script: `compdef _tinycarapace_<name> <name>`
+
+### 4c — fish completion
+
+- `src/shell/fish.zig`: generate `complete -c <name> -k -f -a '(...)'` snippet
+- Candidate output: `value\tdescription` format, fish handles nospace via `--force-files`
+- Descriptions: fish supports them natively, no `COMP_TYPE` equivalent needed
+- Init script: source the generated snippet in `conf.d/`
+
+### 4d — powershell completion
+
+- `src/shell/powershell.zig`: generate `Register-ArgumentCompleter` script
+- Uses `[CompletionResult]::new(...)` for each candidate
+- Candidate output format: `value\tdescription\tcompletionText\tToolTip` (tab-separated)
+
+---
+
+## Phase 5 — Variable expansion & run mode
+
+### 5a — Variable expansion
+
+- Implement `${C_ARG0}`, `${C_ARG1}`, etc. from positional args
+- Implement `${C_FLAG_NAME}` from `Context.flag_values`
+- Implement `${C_VALUE}` for the current partial word
+- Implement `${C_PART0}`, `${C_PART1}`, etc. for multipart segments
+- Use `std.mem.replace` or a simple template engine
+- Apply to completion values (for macros that use variables) and `run` commands
+- Support `${VAR:-default}` and `${VAR//pattern/replacement}` via `drone/envsubst`-style parsing (or a minimal subset)
+
+### 5b — `run` mode
+
+- Execute the spec's `run` field when no completion args are provided
+- `run` can be a string (alias: `"[tail, --lines, '${NUM:-1}']"`), a macro (`"$(tail -n${C_FLAG_LINES:-1} ${C_ARG0})"`), or a script (`"#!/usr/bin/env bash\n..."`)
+- Alias mode: `std.process.execv` with the parsed args
+- Macro mode: execute the shell command, stream output
+- Script mode: write to temp file, make executable, exec
+- Variable expansion applies to all modes
+
+### 5c — `parsing: non-interspersed`
+
+- When flags appear before the first positional arg, everything after the first positional is treated as positional (no more flag parsing)
+- Implementation: after first positional is consumed, set `dash`-like flag to stop flag parsing
+- Test: `cmd file --flag` should complete `file` as positional, not `--flag` as flag
+
+### 5d — `exclusiveflags`
+
+- Validate that mutually exclusive flags aren't both set
+- In completion: exclude flags from the completion list if their exclusive group already has a member set
+- Implementation: during traversal, track which flags from each group have been seen; during flag name completion, exclude already-seen groups
+
+### 5e — `group` subcommand grouping
+
+- Display subcommand groups in the completion menu (for shells that support it)
+- Implementation: set tag on subcommand candidates based on their group field
+- Bash doesn't support tags natively, but zsh and fish do
+
+### 5f — `nargs` / `default` extended flag fields
+
+- `nargs: 2` means the flag consumes 2 positional args
+- `nargs: -1` means the flag consumes all remaining args
+- `default: "value"` sets a default value if the flag isn't provided
+- Implementation: in `traverse.zig`, when a flag with `nargs > 0` is encountered, consume that many positional args as flag values
+- For `default`: store in `Context.flag_values` if not already set
+
+---
+
+## Phase 6 — Dash readline (stretch)
 
 ### The problem
 
-[dash](https://en.wikipedia.org/wiki/Almquist_shell#dash) is Debian's
-`/bin/sh`. It has **no programmable completion** — no `complete` builtin,
-no `COMP_LINE`, no `COMPREPLY`. It uses a bare-bones readline (actually
-libedit on some systems, or a minimal built-in line editor). There is no
-hook to inject custom candidates.
+dash has **no programmable completion** — no `complete` builtin, no `COMP_LINE`,
+no `COMPREPLY`. It uses a bare-bones readline.
 
-### Why this matters for containers
-
-Docker containers often run dash as `/bin/sh`. If you `apt-get install` a
-tool and want completion in an interactive dash session, you're stuck.
-Bash isn't always available (alpine uses busybox ash, distroless images
-have no shell at all). A tiny completion menu that works in dash would be
-unique.
-
-### Approaches considered
-
-#### Option A: `set -o vi` / line editor hook — ❌ Not viable
-Dash's line editor doesn't expose hooks. There's no way to intercept TAB.
-
-#### Option B: Pre-read wrapper function — ✅ Feasible (POC-level)
-Replace the command with a shell function that:
-1. Reads the entire line with `read -e -p` (dash supports `read -e` for
-   line editing on systems with libedit).
-2. On TAB, calls `carapace-tiny` with the partial line, gets candidates.
-3. Displays candidates and re-prompts.
-
-```sh
-mycmd() {
-  while true; do
-    printf '> ' >&2
-    IFS= read -r line || return $?
-    # Check if last char was TAB — but read -e consumes it...
-    # This is the hard part.
-    break
-  done
-  # ... execute the command
-}
-```
-
-**Problem**: `read -e` doesn't expose raw keypresses. TAB triggers
-libedit's own completion (file completion by default). We can't intercept it.
-
-#### Option C: Raw mode read loop (the "tiny readline" approach) — ✅ Most promising
+### Approach: Raw mode read loop
 
 Write a small interactive line reader that:
-1. Puts the terminal in raw mode. In Zig this is trivial — `std.os.linux`
-   provides `ioctl` with `TCGETS` / `TCSETS` directly, no external
-   terminal library needed, no libc:
-   ```zig
-   const linux = std.os.linux;
-   var termios: linux.termios = undefined;
-   _ = linux.ioctl(stdin_fd, linux.T.CGETS, @intFromPtr(&termios));
-   // disable ECHO, ICANON, ISIG
-   termios.lflag &= ~(@as(u32, linux.ECHO | linux.ICANON | linux.ISIG));
-   _ = linux.ioctl(stdin_fd, linux.T.CSETS, @intFromPtr(&termios));
-   ```
-2. Reads keystrokes one at a time via `std.posix.read`.
-3. Maintains a line buffer + cursor position.
-4. On TAB (`\t`), calls the completion engine, displays candidates in a menu
-   below the prompt, and lets the user pick (arrow keys / number / type to
-   filter).
-5. On Enter (`\r` or `\n`), restores terminal, executes the command via
-   `std.process.execv`.
+1. Puts the terminal in raw mode (`ioctl TCSETS`, disable `ICANON|ECHO|ISIG`)
+2. Reads keystrokes one at a time
+3. Maintains a line buffer + cursor position
+4. On TAB, calls the completion engine, displays candidates
+5. On Enter, restores terminal, executes the command via `execv`
 
-This is essentially a **~150-line minimal readline** embedded in carapace-tiny,
-invoked as:
+Zig makes this clean: direct syscalls, no libc needed, no signal handler runtime.
 
-```sh
-# In dash:
-eval "$(carapace-tiny spec.yaml --dash-shell)"
-# This defines a function `mycmd` that calls carapace-tiny's interactive reader
-```
-
-Or run as a wrapper:
-```sh
-alias mycmd='carapace-tiny spec.yaml --dash-run mycmd'
-```
-
-Zig makes this particularly clean because:
-- Direct syscalls, no libc needed (works on musl and glibc-less targets)
-- `std.posix` and `std.os.linux` cover all the ioctl/termios/exec primitives
-- Explicit allocators mean we can use a fixed buffer for the line — no heap
-  fragmentation on every keystroke
-- No signal handler runtime to fight with — we install our own SIGINT handler
-  directly via `std.os.linux.sigaction`
-
-#### Option D: FZF-style external picker — ❌ Requires fzf installed
-Defeats the "small environment" purpose.
-
-### Recommendation
-
-**Option C is the right stretch goal**, and Zig is the ideal language for it
-(direct syscalls, no runtime, tiny binary). For the POC I recommend:
-
-1. **Phase 1**: bash completion only. Get the spec interpreter + bash
-   snippet working. This proves the core value.
-2. **Phase 2**: Add the dash minimal readline as a separate subcommand
-   (`carapace-tiny spec.yaml --dash-repl`). Start with a dead-simple
-   implementation: TAB cycles through candidates inline (like bash
-   `menu-complete`), no multi-column display. ~150 lines of Zig.
-3. **Phase 3**: If dash readline proves useful, add a proper menu with
-   arrow-key navigation and filtering.
-
-The dash readline would be **opt-in** and **self-contained** — it doesn't
-affect the bash path at all, and it adds no dependencies (raw mode via
-`std.os.linux.ioctl` on Linux, no libc needed).
-
-### Dash readline design sketch (Phase 2)
+### Implementation sketch
 
 ```
-carapace-tiny <spec> --dash-repl
-  → enter raw mode (ioctl TCSETS, disable ICANON|ECHO|ISIG)
+tinycarapace spec.yaml --dash-repl
+  → raw mode (ioctl TCSETS, disable ICANON|ECHO|ISIG)
   → install SIGINT handler → restore terminal on signal
   → loop:
-      read byte (std.posix.read stdin)
-      if \t → invoke completion engine with current line
-         → if single match: insert it
-         → if multiple: print them on next line, redisplay prompt + line
-      if \r or \n → break, execute line via std.process.execv
+      read byte
+      if \t → invoke completion with current line
+         → single match: insert it
+         → multiple: print on next line, redisplay prompt + line
+      if \r or \n → break, exec line
       if \x03 (Ctrl-C) → restore terminal, exit
-      if \x7f (Backspace) → delete char before cursor
-      if printable → insert at cursor, shift rest
-  → restore terminal (ioctl TCSETS, original termios)
+      if \x7f (Backspace) → delete before cursor
+      if printable → insert at cursor
+  → restore terminal
   → exec the command
 ```
 
@@ -422,37 +376,30 @@ Enter to run. This is genuinely useful in a container.
 
 ---
 
-## Implementation Phases
+## Implementation Order (Recommended)
 
-### Phase 1 — Core interpreter + bash (the POC)
-
-- [ ] `build.zig` with no dependencies, cross-compile targets
-- [ ] `src/yaml.zig`: Hand-written YAML subset parser (tokenizer + recursive descent)
-- [ ] `src/spec.zig`: Spec/Command/Flag types + decode from YAML value tree
-- [ ] `src/flag.zig`: Flag string parser (port carapace-spec's regex logic)
-- [ ] `src/traverse.zig`: Argument classification state machine
-- [ ] `src/action.zig`: Static values + shell macros (`$sh`, `$bash`, `$files`, `$directories`)
-- [ ] `src/shell/bash.zig`: Snippet generation + output formatting
-- [ ] `src/main.zig`: CLI — `carapace-tiny _carapace [bash]` → init script, `carapace-tiny <name> bash` → snippet, `carapace-tiny <name> bash <name> <args...>` → candidates
-- [ ] `example/example.yaml`: Test spec with flags, subcommands, static + dynamic completion
-- [ ] `test/traverse_test.zig`: Table-driven tests using `std.testing`
-
-### Phase 2 — Dash minimal readline (stretch)
-
-- [ ] `src/shell/dash.zig`: Raw-mode line reader (termios via `std.os.linux`)
-- [ ] `src/main.zig`: `--dash-repl` subcommand
-- [ ] Terminal restore on signal (SIGINT via `std.os.linux.sigaction`)
-- [ ] TAB-completion inline (single match) + list (multiple matches)
-
-### Phase 3 — Polish (later)
-
-- [ ] Persistent flag inheritance verification
-- [ ] `COMP_TYPE` successive-tab descriptions
-- [ ] zsh snippet (`compdef` + `_describe`)
-- [ ] fish snippet (`complete -c ... -a '(...)'`)
-- [ ] Nospace support (per-candidate for zsh/fish, global for bash)
-- [ ] Basic modifiers: `$chdir`, `$filter`, `$list`
-- [ ] `$spec()` macro (load another spec as a subcommand's completion)
+| Step | Phase | What | Est. LOC |
+|------|-------|------|----------|
+| 1 | 2a | `completion.dash` / `dashany` | ~30 |
+| 2 | 2b | Persistent flag inheritance | ~20 |
+| 3 | 2c | Flag value population | ~15 |
+| 4 | 2d | `$files`, `$directories`, `$executables` | ~80 |
+| 5 | 2e | `$(cmd)` shorthand | ~5 |
+| 6 | 3a | `$message(msg)` | ~10 |
+| 7 | 3b | `$list`, `$uniquelist` | ~40 |
+| 8 | 3c | `$chdir` | ~50 |
+| 9 | 3d | `$multiparts` | ~30 |
+| 10 | 3e-f | `$shift`, `$noprefix`, `$suppress`, `$usage`, `$uid` | ~60 |
+| 11 | 3g | `$filterargs` | ~20 |
+| 12 | 4a | Bash `COMP_WORDBREAKS` re-lexing | ~60 |
+| 13 | 4b-d | zsh, fish, powershell shells | ~200 each |
+| 14 | 5a | Variable expansion | ~80 |
+| 15 | 5b | `run` mode | ~100 |
+| 16 | 5c | `parsing: non-interspersed` | ~15 |
+| 17 | 5d | `exclusiveflags` | ~30 |
+| 18 | 5e | `group` subcommand grouping | ~15 |
+| 19 | 5f | `nargs` / `default` | ~40 |
+| 20 | 6 | Dash readline | ~200 |
 
 ---
 
@@ -462,119 +409,56 @@ Zig's built-in test framework. Tests call the traverse + action resolution
 functions directly and compare string output.
 
 ```zig
-const std = @import("std");
-const expectEqualStrings = std.testing.expectEqualStrings;
-
 const TestCase = struct {
     name: []const u8,
     spec_yaml: []const u8,
     args: []const []const u8,
     want: []const u8, // newline-delimited expected output
 };
-
-test "static flags" {
-    const tc = TestCase{
-        .name = "static flags",
-        .spec_yaml =
-            \\name: mycmd
-            \\flags:
-            \\  --verbose: verbose
-            \\  --output=: output file
-        ,
-        .args = &.{"--"},
-        .want = "--verbose\n--output=",
-    };
-    // ... parse, traverse, compare
-}
 ```
 
 For bash snippet integration, a single smoke test that sources the
 generated snippet in a bash subprocess and verifies `COMPREPLY` is
-populated. This requires bash to be installed (skip if not, using
-`std.process.getChild` to check).
+populated. Skip if bash not installed.
 
 ---
 
 ## CLI Interface
 
 ```
-# Generate bash init script for all specs (source this)
-carapace-tiny _carapace bash
-# → prints bash init script to stdout
-
-# Generate bash completion snippet for a single command
-carapace-tiny <name> bash
-# → prints bash snippet to stdout
+# Generate bash completion snippet (source this)
+tinycarapace spec.yaml
 
 # Internal completion callback (invoked by the snippet)
-carapace-tiny <name> bash <name> <args...>
-# → prints newline-delimited candidates
+tinycarapace spec.yaml _complete bash <name> <args...>
 
-# (Phase 2) Interactive dash REPL with completion
-carapace-tiny <name> --dash-repl
+# Generate init script for all discovered specs
+tinycarapace _carapace bash
+
+# Export completions in shell-agnostic format
+tinycarapace spec.yaml export [<args...>]
+
+# (Phase 5b) Run the spec as a command
+tinycarapace spec.yaml run [<args...>]
+
+# (Phase 6) Interactive dash REPL with completion
+tinycarapace spec.yaml --dash-repl
 ```
-
-The `bash` subcommand is the internal protocol — users never call it
-directly. The snippet handles it.
 
 ---
 
-## Build
+## Build & Size
 
 ```bash
-# Native build
-zig build
-
-# Cross-compile (no extra toolchain needed)
-zig build -Dtarget=x86_64-linux-musl
-zig build -Dtarget=aarch64-linux-musl
-zig build -Dtarget=x86_64-linux-gnu.2.27  # old glibc for older containers
-
-# Release (optimized, stripped)
-zig build -Doptimize=ReleaseFast -Dstrip=true
-
-# Run tests
-zig build test
+zig build                                # Build
+zig build test                           # Run tests
+zig build -Doptimize=ReleaseFast -Dstrip=true  # Release build
+zig build -Dtarget=x86_64-linux-musl     # Cross-compile
+zig build -Dtarget=aarch64-linux-musl    # Cross-compile
 ```
-
----
-
-## Size Comparison (Target)
 
 | Binary | Approx size |
 |--------|------------|
-| carapace-bin (Go) | ~30 MB (static, with all completers) |
 | carapace-spec (Go) | ~15 MB |
-| **carapace-tiny** (Zig, ReleaseFast, stripped) | **<500 KB** |
-| carapace-tiny (UPX compressed) | **<200 KB** |
-
-Zig has no runtime, no GC, no garbage collector metadata — the binary is
-just our code + the YAML parser + libc stubs (or fully static with musl).
-
----
-
-## Open Questions
-
-1. **Spec path resolution**: The bash snippet hardcodes the spec path. If
-   the spec moves, the snippet breaks. Carapace-spec has the same issue.
-   Acceptable for POC.
-
-2. **Macro execution environment**: We set `C_ARG<n>`, `C_FLAG_<NAME>`,
-   `C_VALUE` like carapace-spec. But since we don't use pflag, we track
-   flag values ourselves during traversal (simple `std.StringHashMap`).
-
-3. **`xargs` in the snippet**: The bash snippet uses `xargs` to split the
-   command line. On some minimal systems `xargs` behaves differently
-   (busybox). We may need a fallback that passes the raw `COMP_LINE` as a
-   single arg. Defer to testing.
-
-4. **Dash readline terminal compatibility**: Raw mode via ioctl is
-   Linux-specific. For macOS/other BSDs we'd need the equivalent
-   POSIX terminal control calls (which Zig stdlib partially provides via
-   `std.posix.tcgetattr`/`tcsetattr` on non-Linux POSIX targets). Decision:
-   Linux-only for Phase 2, since the target is containers.
-
-5. **YAML parser robustness**: The hand-written parser only needs to handle
-   the spec subset. But users may copy-paste specs from carapace-spec that
-   use unsupported features. Decision: silently ignore unknown fields
-   (forward-compatible), warn on malformed YAML (stderr, not fatal).
+| **tinycarapace** (Zig, ReleaseFast, stripped) | **<500 KB** |
+| tinycarapace (UPX compressed) | **<200 KB** |

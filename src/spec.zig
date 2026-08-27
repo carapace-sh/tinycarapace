@@ -20,6 +20,8 @@ pub const Command = struct {
         flag: []const FlagCompletion = &.{},
         positional: []const []const []const u8 = &.{},
         positionalany: []const []const u8 = &.{},
+        dash: []const []const []const u8 = &.{},
+        dashany: []const []const u8 = &.{},
     };
 
     pub const FlagCompletion = struct {
@@ -238,6 +240,23 @@ fn decodeCompletion(allocator: std.mem.Allocator, val: yaml.Value) !Command.Comp
         var arr = try allocator.alloc([]const u8, pos.len);
         for (pos, 0..) |p, i| arr[i] = p.scalar;
         comp.positionalany = arr;
+    }
+
+    if (val.getList("dash")) |dash| {
+        var arr = try allocator.alloc([]const []const u8, dash.len);
+        for (dash, 0..) |d, i| {
+            const list = d.list;
+            var inner = try allocator.alloc([]const u8, list.len);
+            for (list, 0..) |item, j| inner[j] = item.scalar;
+            arr[i] = inner;
+        }
+        comp.dash = arr;
+    }
+
+    if (val.getList("dashany")) |dashany| {
+        var arr = try allocator.alloc([]const u8, dashany.len);
+        for (dashany, 0..) |d, i| arr[i] = d.scalar;
+        comp.dashany = arr;
     }
 
     return comp;

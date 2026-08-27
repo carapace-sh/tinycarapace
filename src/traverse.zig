@@ -170,6 +170,17 @@ pub fn complete(allocator: std.mem.Allocator, io: std.Io, root: spec.Command, cm
         return completeShorthandSeries(allocator, io, current, shorthand_part);
     }
 
+    if (dash) {
+        if (positional_count < current.completion.dash.len) {
+            const pos = current.completion.dash[positional_count];
+            return resolveValues(allocator, io, pos, value);
+        }
+        if (current.completion.dashany.len > 0) {
+            return resolveValues(allocator, io, current.completion.dashany, value);
+        }
+        // Fall through to positional/positionalany if no dash completions defined
+    }
+
     if (!dash and current.commands.len > 0 and positional_count == 0) {
         var candidates = std.ArrayList(Candidate).empty;
         for (current.commands) |cmd| {
@@ -750,6 +761,56 @@ test "complete positional after dash" {
     try std.testing.expectEqualStrings("one", result[0].value);
     try std.testing.expectEqualStrings("two", result[1].value);
     try std.testing.expectEqualStrings("three", result[2].value);
+}
+
+test "complete dash positional" {
+    const yaml_src =
+        \\name: mycmd
+        \\completion:
+        \\  dash:
+        \\    - [d1, d2]
+        \\    - [d3, d4]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), std.testing.io, cmd, &.{ "mycmd", "--", "" });
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqualStrings("d1", result[0].value);
+    try std.testing.expectEqualStrings("d2", result[1].value);
+}
+
+test "complete dash positional second position" {
+    const yaml_src =
+        \\name: mycmd
+        \\completion:
+        \\  dash:
+        \\    - [d1, d2]
+        \\    - [d3, d4]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), std.testing.io, cmd, &.{ "mycmd", "--", "d1", "" });
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqualStrings("d3", result[0].value);
+    try std.testing.expectEqualStrings("d4", result[1].value);
+}
+
+test "complete dashany fallback" {
+    const yaml_src =
+        \\name: mycmd
+        \\completion:
+        \\  dash:
+        \\    - [d1, d2]
+        \\  dashany: [any]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), std.testing.io, cmd, &.{ "mycmd", "--", "d1", "d2", "" });
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqualStrings("any", result[0].value);
 }
 
 test "complete subcommand with disabled parsing" {
