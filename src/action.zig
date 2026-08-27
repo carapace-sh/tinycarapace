@@ -10,10 +10,8 @@ pub fn resolveMacro(allocator: std.mem.Allocator, macro: []const u8) ![]traverse
 
     const val = std.mem.trim(u8, macro, " \t");
     if (val.len > 0) {
-        var it = std.mem.splitScalar(u8, val, '\t');
-        const v = it.first();
-        const desc = if (it.next()) |d| d else "";
-        try candidates.append(allocator, .{ .value = v, .description = desc });
+        const parsed = traverse.splitValue(val);
+        try candidates.append(allocator, .{ .value = parsed.value, .description = parsed.description, .style = parsed.style });
     }
     return candidates.toOwnedSlice(allocator);
 }

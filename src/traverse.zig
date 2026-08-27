@@ -5,7 +5,18 @@ const Flag = @import("flag.zig").Flag;
 pub const Candidate = struct {
     value: []const u8,
     description: []const u8 = "",
+    style: []const u8 = "",
 };
+
+/// Split a raw value string into (value, description, style) using tab separators.
+/// Format: `value\tdescription\tstyle` or `value\tdescription` or just `value`.
+pub fn splitValue(raw: []const u8) struct { value: []const u8, description: []const u8, style: []const u8 } {
+    var it = std.mem.splitScalar(u8, raw, '\t');
+    const val = it.first();
+    const desc = if (it.next()) |d| d else "";
+    const style = if (it.next()) |s| s else "";
+    return .{ .value = val, .description = desc, .style = style };
+}
 
 pub const Context = struct {
     cmd: spec.Command,
@@ -166,8 +177,9 @@ pub fn complete(allocator: std.mem.Allocator, root: spec.Command, cmdline: []con
         if (current.completion.positional.len > 0) {
             const pos = current.completion.positional[0];
             for (pos) |v| {
-                if (std.mem.startsWith(u8, v, value)) {
-                    try candidates.append(allocator, .{ .value = v });
+                const parsed = splitValue(v);
+                if (std.mem.startsWith(u8, parsed.value, value)) {
+                    try candidates.append(allocator, .{ .value = parsed.value, .description = parsed.description, .style = parsed.style });
                 }
             }
         }
@@ -178,8 +190,9 @@ pub fn complete(allocator: std.mem.Allocator, root: spec.Command, cmdline: []con
         const pos = current.completion.positional[positional_count];
         var candidates = std.ArrayList(Candidate).empty;
         for (pos) |v| {
-            if (std.mem.startsWith(u8, v, value)) {
-                try candidates.append(allocator, .{ .value = v });
+            const parsed = splitValue(v);
+            if (std.mem.startsWith(u8, parsed.value, value)) {
+                try candidates.append(allocator, .{ .value = parsed.value, .description = parsed.description, .style = parsed.style });
             }
         }
         return candidates.toOwnedSlice(allocator);
@@ -188,8 +201,9 @@ pub fn complete(allocator: std.mem.Allocator, root: spec.Command, cmdline: []con
     if (current.completion.positionalany.len > 0) {
         var candidates = std.ArrayList(Candidate).empty;
         for (current.completion.positionalany) |v| {
-            if (std.mem.startsWith(u8, v, value)) {
-                try candidates.append(allocator, .{ .value = v });
+            const parsed = splitValue(v);
+            if (std.mem.startsWith(u8, parsed.value, value)) {
+                try candidates.append(allocator, .{ .value = parsed.value, .description = parsed.description, .style = parsed.style });
             }
         }
         return candidates.toOwnedSlice(allocator);
@@ -317,12 +331,9 @@ fn completeFlagValue(allocator: std.mem.Allocator, cmd: spec.Command, f: Flag, v
     const values = cmd.findFlagCompletion(f.name()) orelse return &.{};
     var candidates = std.ArrayList(Candidate).empty;
     for (values) |v| {
-        const desc_split = std.mem.splitScalar(u8, v, '\t');
-        var it = desc_split;
-        const val = it.first();
-        const desc = if (it.next()) |d| d else "";
-        if (std.mem.startsWith(u8, val, value)) {
-            try candidates.append(allocator, .{ .value = val, .description = desc });
+        const parsed = splitValue(v);
+        if (std.mem.startsWith(u8, parsed.value, value)) {
+            try candidates.append(allocator, .{ .value = parsed.value, .description = parsed.description, .style = parsed.style });
         }
     }
     return candidates.toOwnedSlice(allocator);
@@ -332,12 +343,9 @@ fn completeFlagValueWithPrefix(allocator: std.mem.Allocator, cmd: spec.Command, 
     const values = cmd.findFlagCompletion(flag_name) orelse return &.{};
     var candidates = std.ArrayList(Candidate).empty;
     for (values) |v| {
-        const desc_split = std.mem.splitScalar(u8, v, '\t');
-        var it = desc_split;
-        const val = it.first();
-        const desc = if (it.next()) |d| d else "";
-        if (std.mem.startsWith(u8, val, prefix)) {
-            try candidates.append(allocator, .{ .value = val, .description = desc });
+        const parsed = splitValue(v);
+        if (std.mem.startsWith(u8, parsed.value, prefix)) {
+            try candidates.append(allocator, .{ .value = parsed.value, .description = parsed.description, .style = parsed.style });
         }
     }
     return candidates.toOwnedSlice(allocator);
@@ -1332,4 +1340,86 @@ test "nonposix mixed shorthand completion" {
     const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "-sh" });
     try std.testing.expectEqual(@as(usize, 1), result.len);
     try std.testing.expectEqualStrings("-short", result[0].value);
+}
+
+test "splitValue extracts value only" {
+    const parsed = splitValue("hello");
+    try std.testing.expectEqualStrings("hello", parsed.value);
+    try std.testing.expectEqualStrings("", parsed.description);
+    try std.testing.expectEqualStrings("", parsed.style);
+}
+
+test "splitValue extracts value and description" {
+    const parsed = splitValue("hello\tworld");
+    try std.testing.expectEqualStrings("hello", parsed.value);
+    try std.testing.expectEqualStrings("world", parsed.description);
+    try std.testing.expectEqualStrings("", parsed.style);
+}
+
+test "splitValue extracts value, description, and style" {
+    const parsed = splitValue("hello\tworld\tbold");
+    try std.testing.expectEqualStrings("hello", parsed.value);
+    try std.testing.expectEqualStrings("world", parsed.description);
+    try std.testing.expectEqualStrings("bold", parsed.style);
+}
+
+test "complete flag value with style" {
+    const yaml_src =
+        "name: mycmd\n" ++
+        "flags:\n" ++
+        "  --format=: output format\n" ++
+        "completion:\n" ++
+        "  flag:\n" ++
+        "    format: [json\tJSON\tbold, yaml\tYAML\titalic, toml\tTOML]\n";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "--format", "" });
+    try std.testing.expectEqual(@as(usize, 3), result.len);
+    try std.testing.expectEqualStrings("json", result[0].value);
+    try std.testing.expectEqualStrings("JSON", result[0].description);
+    try std.testing.expectEqualStrings("bold", result[0].style);
+    try std.testing.expectEqualStrings("yaml", result[1].value);
+    try std.testing.expectEqualStrings("YAML", result[1].description);
+    try std.testing.expectEqualStrings("italic", result[1].style);
+    try std.testing.expectEqualStrings("toml", result[2].value);
+    try std.testing.expectEqualStrings("TOML", result[2].description);
+    try std.testing.expectEqualStrings("", result[2].style);
+}
+
+test "complete positional with description and style" {
+    const yaml_src =
+        "name: mycmd\n" ++
+        "completion:\n" ++
+        "  positional:\n" ++
+        "    - [foo\tFoo\tred, bar\tBar\tblue]\n";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "" });
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqualStrings("foo", result[0].value);
+    try std.testing.expectEqualStrings("Foo", result[0].description);
+    try std.testing.expectEqualStrings("red", result[0].style);
+    try std.testing.expectEqualStrings("bar", result[1].value);
+    try std.testing.expectEqualStrings("Bar", result[1].description);
+    try std.testing.expectEqualStrings("blue", result[1].style);
+}
+
+test "complete positionalany with description and style" {
+    const yaml_src =
+        "name: mycmd\n" ++
+        "completion:\n" ++
+        "  positionalany: [unit\tUnit\tgreen, e2e\tE2E]\n";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), cmd, &.{ "mycmd", "" });
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqualStrings("unit", result[0].value);
+    try std.testing.expectEqualStrings("Unit", result[0].description);
+    try std.testing.expectEqualStrings("green", result[0].style);
+    try std.testing.expectEqualStrings("e2e", result[1].value);
+    try std.testing.expectEqualStrings("E2E", result[1].description);
+    try std.testing.expectEqualStrings("", result[1].style);
 }
