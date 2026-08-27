@@ -1401,6 +1401,51 @@ test "complete positional with description and style" {
     try std.testing.expectEqualStrings("blue", result[1].style);
 }
 
+test "complete only flags at dash prefix, no subcommands" {
+    const yaml_src =
+        \\name: tinycarapace
+        \\flags:
+        \\  -h, --help: show help
+        \\  -v, --verbose: verbose
+        \\completion:
+        \\  positional:
+        \\    - ["one", "two", "three"]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+
+    // tinycarapace -<TAB> → all flags (no subcommands)
+    const result = try complete(arena.allocator(), std.testing.io, cmd, &.{ "tinycarapace", "-" });
+    try std.testing.expectEqual(@as(usize, 4), result.len);
+    try std.testing.expectEqualStrings("--help", result[0].value);
+    try std.testing.expectEqualStrings("-h", result[1].value);
+    try std.testing.expectEqualStrings("--verbose", result[2].value);
+    try std.testing.expectEqualStrings("-v", result[3].value);
+}
+
+test "complete only positionals at empty prefix, no subcommands" {
+    const yaml_src =
+        \\name: tinycarapace
+        \\flags:
+        \\  -h, --help: show help
+        \\  -v, --verbose: verbose
+        \\completion:
+        \\  positional:
+        \\    - ["one", "two", "three"]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+
+    // tinycarapace <TAB> → only positionals (no subcommands)
+    const result = try complete(arena.allocator(), std.testing.io, cmd, &.{ "tinycarapace", "" });
+    try std.testing.expectEqual(@as(usize, 3), result.len);
+    try std.testing.expectEqualStrings("one", result[0].value);
+    try std.testing.expectEqualStrings("two", result[1].value);
+    try std.testing.expectEqualStrings("three", result[2].value);
+}
+
 test "complete positionalany with description and style" {
     const yaml_src =
         "name: mycmd\n" ++
