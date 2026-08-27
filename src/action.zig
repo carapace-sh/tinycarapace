@@ -45,6 +45,15 @@ pub fn resolveMacro(allocator: std.mem.Allocator, io: std.Io, macro: []const u8,
         return try resolveExecutables(allocator, io, environ_map);
     }
 
+    // Handle bare dollar shorthand: $(cmd) → $sh(cmd)
+    if (macro.len >= 3 and macro[0] == '$' and macro[1] == '(' and macro[macro.len - 1] == ')') {
+        const command = macro[2 .. macro.len - 1];
+        if (command.len > 0) {
+            return try execCommand(allocator, io, "sh", command);
+        }
+        return &.{};
+    }
+
     // Handle exec macros: $sh(command), $bash(command), $pwsh(command)
     const exec_macro = comptime [_]struct { prefix: []const u8, shell: []const u8 }{
         .{ .prefix = "$sh(", .shell = "sh" },
@@ -563,6 +572,15 @@ test "executables macro with PATH env" {
     try env_map.put("PATH", "/usr/bin:/bin");
     const candidates = try resolveMacro(arena.allocator(), std.testing.io, "$executables", &env_map);
     try std.testing.expect(candidates.len > 0);
+}
+
+test "bare dollar shorthand $(cmd) matches $sh(cmd)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const candidates = try resolveMacro(arena.allocator(), std.testing.io, "$(echo one; echo two)", null);
+    try std.testing.expectEqual(@as(usize, 2), candidates.len);
+    try std.testing.expectEqualStrings("one", candidates[0].value);
+    try std.testing.expectEqualStrings("two", candidates[1].value);
 }
 
 test "parse flow list" {
