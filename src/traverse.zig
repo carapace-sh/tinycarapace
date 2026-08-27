@@ -38,6 +38,10 @@ pub const Context = struct {
 };
 
 pub fn complete(allocator: std.mem.Allocator, io: std.Io, root: spec.Command, cmdline: []const []const u8) ![]Candidate {
+    return completeWithEnv(allocator, io, root, cmdline, null);
+}
+
+pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Command, cmdline: []const []const u8, environ_map: ?*const std.process.Environ.Map) ![]Candidate {
     if (cmdline.len == 0) return &.{};
 
     // First arg is the command name itself — skip it
@@ -139,7 +143,7 @@ pub fn complete(allocator: std.mem.Allocator, io: std.Io, root: spec.Command, cm
     _ = &ctx;
 
     if (in_flag) |f| {
-        return completeFlagValue(allocator, io, current, f, value);
+        return completeFlagValue(allocator, io, current, f, value, environ_map);
     }
 
     if (value.len > 0 and value[0] == '-' and flag_parsing) {
@@ -147,7 +151,7 @@ pub fn complete(allocator: std.mem.Allocator, io: std.Io, root: spec.Command, cm
             if (std.mem.indexOfScalar(u8, value, '=')) |eq| {
                 const flag_name = value[2..eq];
                 const prefix = value[eq + 1 ..];
-                return completeFlagValueWithPrefix(allocator, io, current, flag_name, prefix);
+                return completeFlagValueWithPrefix(allocator, io, current, flag_name, prefix, environ_map);
             }
             return completeFlags(allocator, current, value);
         }
@@ -161,7 +165,7 @@ pub fn complete(allocator: std.mem.Allocator, io: std.Io, root: spec.Command, cm
             const flag_name = value[1..eq];
             const prefix = value[eq + 1 ..];
             if (current.findFlag(flag_name)) |_| {
-                return completeFlagValueWithPrefix(allocator, io, current, flag_name, prefix);
+                return completeFlagValueWithPrefix(allocator, io, current, flag_name, prefix, environ_map);
             }
         }
         // Multi-char single-dash: could be non-POSIX flag or shorthand series.
@@ -176,16 +180,16 @@ pub fn complete(allocator: std.mem.Allocator, io: std.Io, root: spec.Command, cm
         if (hasNonPosixFlags(current)) {
             return completeFlags(allocator, current, value);
         }
-        return completeShorthandSeries(allocator, io, current, shorthand_part);
+        return completeShorthandSeriesWithEnv(allocator, io, current, shorthand_part, environ_map);
     }
 
     if (dash) {
         if (positional_count < current.completion.dash.len) {
             const pos = current.completion.dash[positional_count];
-            return resolveValues(allocator, io, pos, value);
+            return resolveValuesWithEnv(allocator, io, pos, value, environ_map);
         }
         if (current.completion.dashany.len > 0) {
-            return resolveValues(allocator, io, current.completion.dashany, value);
+            return resolveValuesWithEnv(allocator, io, current.completion.dashany, value, environ_map);
         }
         // Fall through to positional/positionalany if no dash completions defined
     }
@@ -199,7 +203,7 @@ pub fn complete(allocator: std.mem.Allocator, io: std.Io, root: spec.Command, cm
         }
         if (current.completion.positional.len > 0) {
             const pos = current.completion.positional[0];
-            const resolved = try resolveValues(allocator, io, pos, value);
+            const resolved = try resolveValuesWithEnv(allocator, io, pos, value, environ_map);
             try candidates.appendSlice(allocator, resolved);
             allocator.free(resolved);
         }
@@ -208,11 +212,11 @@ pub fn complete(allocator: std.mem.Allocator, io: std.Io, root: spec.Command, cm
 
     if (positional_count < current.completion.positional.len) {
         const pos = current.completion.positional[positional_count];
-        return resolveValues(allocator, io, pos, value);
+        return resolveValuesWithEnv(allocator, io, pos, value, environ_map);
     }
 
     if (current.completion.positionalany.len > 0) {
-        return resolveValues(allocator, io, current.completion.positionalany, value);
+        return resolveValuesWithEnv(allocator, io, current.completion.positionalany, value, environ_map);
     }
 
     return &.{};
@@ -222,10 +226,14 @@ pub fn complete(allocator: std.mem.Allocator, io: std.Io, root: spec.Command, cm
 /// Static values (no macro) are parsed for tab-separated description/style.
 /// Macro values (starting with `$`) are passed to `action.resolveMacro`.
 fn resolveValues(allocator: std.mem.Allocator, io: std.Io, values: []const []const u8, prefix: []const u8) ![]Candidate {
+    return resolveValuesWithEnv(allocator, io, values, prefix, null);
+}
+
+fn resolveValuesWithEnv(allocator: std.mem.Allocator, io: std.Io, values: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]Candidate {
     var candidates = std.ArrayList(Candidate).empty;
     for (values) |v| {
         if (v.len > 0 and v[0] == '$') {
-            const macro_candidates = try action.resolveMacro(allocator, io, v);
+            const macro_candidates = try action.resolveMacro(allocator, io, v, environ_map);
             for (macro_candidates) |c| {
                 if (std.mem.startsWith(u8, c.value, prefix)) {
                     try candidates.append(allocator, c);
@@ -303,6 +311,10 @@ fn addFlagCandidate(allocator: std.mem.Allocator, candidates: *std.ArrayList(Can
 }
 
 fn completeShorthandSeries(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, shorthand_part: []const u8) ![]Candidate {
+    return completeShorthandSeriesWithEnv(allocator, io, cmd, shorthand_part, null);
+}
+
+fn completeShorthandSeriesWithEnv(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, shorthand_part: []const u8, environ_map: ?*const std.process.Environ.Map) ![]Candidate {
     // Walk the already-typed shorthand chars. All must be valid bool/optarg shorthands.
     // If any is a non-optarg value flag, the rest would be consumed as its attached value,
     // so we can't chain further — fall back to completing that flag's value.
@@ -316,11 +328,11 @@ fn completeShorthandSeries(allocator: std.mem.Allocator, io: std.Io, cmd: spec.C
                 // Otherwise, the rest is the attached value prefix.
                 if (j == shorthand_part.len - 1) {
                     // Last char is a value flag expecting next arg — complete its value
-                    return completeFlagValue(allocator, io, cmd, f, "");
+                    return completeFlagValue(allocator, io, cmd, f, "", environ_map);
                 }
                 // Rest after this char is the attached value prefix
                 const attached = shorthand_part[j + 1 ..];
-                return completeFlagValueWithPrefix(allocator, io, cmd, f.name(), attached);
+                return completeFlagValueWithPrefix(allocator, io, cmd, f.name(), attached, environ_map);
             } else if (f.optarg) {
                 // Optarg flag: rest after this char is optional value
                 if (j == shorthand_part.len - 1) {
@@ -380,14 +392,14 @@ fn completeShorthandSeries(allocator: std.mem.Allocator, io: std.Io, cmd: spec.C
     return candidates.toOwnedSlice(allocator);
 }
 
-fn completeFlagValue(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, f: Flag, value: []const u8) ![]Candidate {
+fn completeFlagValue(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, f: Flag, value: []const u8, environ_map: ?*const std.process.Environ.Map) ![]Candidate {
     const values = cmd.findFlagCompletion(f.name()) orelse return &.{};
-    return resolveValues(allocator, io, values, value);
+    return resolveValuesWithEnv(allocator, io, values, value, environ_map);
 }
 
-fn completeFlagValueWithPrefix(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, flag_name: []const u8, prefix: []const u8) ![]Candidate {
+fn completeFlagValueWithPrefix(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, flag_name: []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]Candidate {
     const values = cmd.findFlagCompletion(flag_name) orelse return &.{};
-    return resolveValues(allocator, io, values, prefix);
+    return resolveValuesWithEnv(allocator, io, values, prefix, environ_map);
 }
 
 test "complete flag names" {

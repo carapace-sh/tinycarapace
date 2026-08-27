@@ -56,7 +56,7 @@ pub fn main(init: std.process.Init) !u8 {
             return 1;
         };
 
-        const candidates = try traverse.complete(arena.allocator(), init.io, cmd, cmdline_args.items);
+        const candidates = try traverse.completeWithEnv(arena.allocator(), init.io, cmd, cmdline_args.items, init.environ_map);
         const out = try export_shell.formatOutput(arena.allocator(), candidates);
         std.Io.File.stdout().writeStreamingAll(init.io, out) catch {};
         return 0;
@@ -103,7 +103,7 @@ pub fn main(init: std.process.Init) !u8 {
             return 1;
         };
 
-        const candidates = try traverse.complete(arena.allocator(), init.io, cmd, cmdline_args.items);
+        const candidates = try traverse.completeWithEnv(arena.allocator(), init.io, cmd, cmdline_args.items, init.environ_map);
         const comp_type = init.environ_map.get("COMP_TYPE");
         const out = try bash.formatOutput(arena.allocator(), candidates, comp_type);
         std.Io.File.stdout().writeStreamingAll(init.io, out) catch {};
