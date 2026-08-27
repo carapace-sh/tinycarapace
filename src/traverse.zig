@@ -52,13 +52,15 @@ pub fn complete(allocator: std.mem.Allocator, io: std.Io, root: spec.Command, cm
     var positional_count: usize = 0;
     var dash = false;
     var flag_parsing = true;
+    var flag_values = std.StringHashMap([]const u8).init(allocator);
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
 
-        if (in_flag) |_| {
+        if (in_flag) |f| {
             in_flag = null;
+            try flag_values.put(f.name(), arg);
             continue;
         }
 
@@ -70,7 +72,12 @@ pub fn complete(allocator: std.mem.Allocator, io: std.Io, root: spec.Command, cm
 
         if (flag_parsing and arg.len > 0 and arg[0] == '-') {
             if (arg.len > 1 and arg[1] == '-') {
-                if (std.mem.indexOfScalar(u8, arg, '=')) |_| {
+                if (std.mem.indexOfScalar(u8, arg, '=')) |eq| {
+                    const flag_name = arg[2..eq];
+                    const flag_value = arg[eq + 1 ..];
+                    if (current.findFlag(flag_name)) |_| {
+                        try flag_values.put(flag_name, flag_value);
+                    }
                     continue;
                 }
                 const name = arg[2..];
@@ -95,6 +102,8 @@ pub fn complete(allocator: std.mem.Allocator, io: std.Io, root: spec.Command, cm
                             if (f.takes_value and !f.optarg) {
                                 if (j < name.len - 1) {
                                     // Rest of string is attached value
+                                    const attached = name[j + 1 ..];
+                                    try flag_values.put(f.name(), attached);
                                 } else {
                                     in_flag = f;
                                 }
@@ -126,7 +135,7 @@ pub fn complete(allocator: std.mem.Allocator, io: std.Io, root: spec.Command, cm
         positional_count += 1;
     }
 
-    var ctx = Context.init(allocator, current, args, value);
+    var ctx = Context{ .cmd = current, .args = args, .value = value, .flag_values = flag_values };
     _ = &ctx;
 
     if (in_flag) |f| {
@@ -752,6 +761,43 @@ test "complete positional after flag with value" {
     const result = try complete(arena.allocator(), std.testing.io, cmd, &.{ "mycmd", "--format", "json", "" });
     try std.testing.expectEqual(@as(usize, 3), result.len);
     try std.testing.expectEqualStrings("one", result[0].value);
+}
+
+test "flag value population from space-separated flag" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  --format=: output format
+        \\completion:
+        \\  flag:
+        \\    format: [json, yaml]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    // --format json should store format=json in flag_values
+    // We can't directly inspect flag_values from outside, but we can verify
+    // that the flag value is consumed (no flag value completion offered)
+    const result = try complete(arena.allocator(), std.testing.io, cmd, &.{ "mycmd", "--format", "json", "" });
+    // After consuming --format json, "" should be positional, not flag value
+    try std.testing.expectEqual(@as(usize, 0), result.len);
+}
+
+test "flag value population from --flag=value" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  --format=: output format
+        \\completion:
+        \\  flag:
+        \\    format: [json, yaml]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    // --format=json should store format=json, then "" is positional
+    const result = try complete(arena.allocator(), std.testing.io, cmd, &.{ "mycmd", "--format=json", "" });
+    try std.testing.expectEqual(@as(usize, 0), result.len);
 }
 
 test "complete after dash disables flag parsing" {
