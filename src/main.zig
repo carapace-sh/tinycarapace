@@ -17,9 +17,11 @@ pub fn main(init: std.process.Init) !u8 {
 
     // carapace-tiny _carapace [bash] → init script
     if (std.mem.eql(u8, std.mem.span(argv[1]), "_carapace")) {
-        const specs = try spec.discoverSpecs(spec_env, allocator);
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const specs = try spec.discoverSpecs(spec_env, arena.allocator());
         if (specs.len == 0) return 0;
-        const script = try bash.generateInitScript(allocator, specs);
+        const script = try bash.generateInitScript(arena.allocator(), specs);
         std.Io.File.stdout().writeStreamingAll(init.io, script) catch {};
         return 0;
     }
@@ -30,22 +32,27 @@ pub fn main(init: std.process.Init) !u8 {
     if (argv.len >= 3 and std.mem.eql(u8, std.mem.span(argv[2]), "bash")) {
         if (argv.len == 3) {
             // carapace-tiny <name> bash → snippet for single command
-            const snippet = try bash.generateSnippet(allocator, name);
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            defer arena.deinit();
+            const snippet = try bash.generateSnippet(arena.allocator(), name);
             std.Io.File.stdout().writeStreamingAll(init.io, snippet) catch {};
             return 0;
         }
 
         // carapace-tiny <name> bash <name> <args...> → completions
         // argv[3] is the command name again (from xargs input in the snippet)
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+
         var cmdline_args: std.ArrayList([]const u8) = .empty;
         if (argv.len > 3) {
             for (argv[3..]) |a| {
-                try cmdline_args.append(allocator, std.mem.span(a));
+                try cmdline_args.append(arena.allocator(), std.mem.span(a));
             }
         }
 
         // Look up spec from CARAPACE_SPECS
-        const specs = try spec.discoverSpecs(spec_env, allocator);
+        const specs = try spec.discoverSpecs(spec_env, arena.allocator());
         const spec_info = spec.findSpec(specs, name) orelse {
             std.debug.print("error: unknown command: {s}\n", .{name});
             return 1;
@@ -57,8 +64,6 @@ pub fn main(init: std.process.Init) !u8 {
         };
         defer allocator.free(content);
 
-        var arena = std.heap.ArenaAllocator.init(allocator);
-        defer arena.deinit();
         const cmd = spec.loadSpec(arena.allocator(), content) catch |err| {
             std.debug.print("error: cannot parse spec: {s}\n", .{@errorName(err)});
             return 1;
