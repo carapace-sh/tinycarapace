@@ -792,6 +792,36 @@ test "complete subcommand with disabled parsing shows positionals for empty stri
     try std.testing.expectEqualStrings("three", result[2].value);
 }
 
+test "complete flags with mixed shorthand/longhand" {
+    const yaml_src =
+        \\name: tinycarapace
+        \\flags:
+        \\  -h, --help: show help
+        \\  -v, --verbose: verbose
+        \\completion:
+        \\  positional:
+        \\   - ["one", "two", "three"]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+
+    // -<TAB> should show all 4 flag forms
+    const result1 = try complete(arena.allocator(), std.testing.io, cmd, &.{ "tinycarapace", "-" });
+    try std.testing.expectEqual(@as(usize, 4), result1.len);
+    try std.testing.expectEqualStrings("--help", result1[0].value);
+    try std.testing.expectEqualStrings("-h", result1[1].value);
+    try std.testing.expectEqualStrings("--verbose", result1[2].value);
+    try std.testing.expectEqualStrings("-v", result1[3].value);
+
+    // <TAB> should show all 3 positional values
+    const result2 = try complete(arena.allocator(), std.testing.io, cmd, &.{ "tinycarapace", "" });
+    try std.testing.expectEqual(@as(usize, 3), result2.len);
+    try std.testing.expectEqualStrings("one", result2[0].value);
+    try std.testing.expectEqualStrings("two", result2[1].value);
+    try std.testing.expectEqualStrings("three", result2[2].value);
+}
+
 test "complete repeatable flag shown again" {
     const yaml_src =
         \\name: mycmd
