@@ -233,7 +233,7 @@ fn resolveValuesWithEnv(allocator: std.mem.Allocator, io: std.Io, values: []cons
     var candidates = std.ArrayList(Candidate).empty;
     for (values) |v| {
         if (v.len > 0 and v[0] == '$') {
-            const macro_candidates = try action.resolveMacro(allocator, io, v, environ_map);
+            const macro_candidates = try action.resolveMacro(allocator, io, v, prefix, environ_map);
             for (macro_candidates) |c| {
                 if (std.mem.startsWith(u8, c.value, prefix)) {
                     try candidates.append(allocator, c);
