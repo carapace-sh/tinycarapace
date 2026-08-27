@@ -6,10 +6,12 @@ pub const Command = struct {
     name: []const u8 = "",
     description: []const u8 = "",
     aliases: []const []const u8 = &.{},
+    group: []const u8 = "",
     hidden: bool = false,
     parsing: Parsing = .interspersed,
     flags: []Flag = &.{},
     persistent_flags: []Flag = &.{},
+    exclusive_flags: []const []const []const u8 = &.{},
     commands: []Command = &.{},
     completion: Completion = .{},
     run: []const u8 = "",
@@ -178,6 +180,8 @@ fn decodeCommandWithParent(allocator: std.mem.Allocator, val: yaml.Value, parent
     }
     if (val.getScalar("run")) |run| cmd_ptr.run = run;
 
+    if (val.getScalar("group")) |group| cmd_ptr.group = group;
+
     if (val.getList("aliases")) |aliases| {
         var arr = try allocator.alloc([]const u8, aliases.len);
         for (aliases, 0..) |a, i| {
@@ -191,6 +195,17 @@ fn decodeCommandWithParent(allocator: std.mem.Allocator, val: yaml.Value, parent
     }
     if (val.getMap("persistentflags")) |flags| {
         cmd_ptr.persistent_flags = try decodeFlags(allocator, flags);
+    }
+
+    if (val.getList("exclusiveflags")) |excl| {
+        var arr = try allocator.alloc([]const []const u8, excl.len);
+        for (excl, 0..) |group_val, i| {
+            const list = group_val.list;
+            var inner = try allocator.alloc([]const u8, list.len);
+            for (list, 0..) |item, j| inner[j] = item.scalar;
+            arr[i] = inner;
+        }
+        cmd_ptr.exclusive_flags = arr;
     }
 
     if (val.getList("commands")) |cmds| {
@@ -211,10 +226,27 @@ fn decodeCommandWithParent(allocator: std.mem.Allocator, val: yaml.Value, parent
 fn decodeFlags(allocator: std.mem.Allocator, flags: []yaml.Value.KV) ![]Flag {
     var arr = try allocator.alloc(Flag, flags.len);
     for (flags, 0..) |kv, i| {
-        arr[i] = @import("flag.zig").parseFlag(kv.key, switch (kv.value) {
+        const desc = switch (kv.value) {
             .scalar => |s| s,
+            .map => |m| blk: {
+                // Extended notation: value is a map with description, nargs, default
+                if (yaml.getScalarFromMap(m, "description")) |d| break :blk d;
+                break :blk "";
+            },
             else => "",
-        });
+        };
+        var f = @import("flag.zig").parseFlag(kv.key, desc);
+        // Parse extended fields from map notation
+        if (kv.value == .map) {
+            const m = kv.value.map;
+            if (yaml.getScalarFromMap(m, "nargs")) |nargs_str| {
+                f.nargs = std.fmt.parseInt(i32, nargs_str, 10) catch 0;
+            }
+            if (yaml.getScalarFromMap(m, "default")) |default| {
+                f.default = default;
+            }
+        }
+        arr[i] = f;
     }
     return arr;
 }

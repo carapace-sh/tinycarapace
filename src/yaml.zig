@@ -47,6 +47,19 @@ pub const Value = union(enum) {
     }
 };
 
+/// Helper to get a scalar value from a raw KV slice (map entries).
+pub fn getScalarFromMap(map: []const Value.KV, key: []const u8) ?[]const u8 {
+    for (map) |kv| {
+        if (std.mem.eql(u8, kv.key, key)) {
+            return switch (kv.value) {
+                .scalar => |s| s,
+                else => null,
+            };
+        }
+    }
+    return null;
+}
+
 const Parser = struct {
     arena: std.heap.ArenaAllocator,
     src: []const u8,

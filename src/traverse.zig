@@ -21,6 +21,75 @@ pub fn splitValue(raw: []const u8) struct { value: []const u8, description: []co
     return .{ .value = val, .description = desc, .style = style };
 }
 
+/// Expand variables in a string: ${C_ARG0}, ${C_FLAG_NAME}, ${C_VALUE}
+/// Supports ${VAR:-default} syntax.
+pub fn expandVariables(allocator: std.mem.Allocator, template: []const u8, flag_values: *const std.StringHashMap([]const u8), positional_args: []const []const u8, current_value: []const u8) ![]const u8 {
+    // Simple variable expansion: find ${...} patterns and replace
+    var result = std.ArrayList(u8).empty;
+    var i: usize = 0;
+    while (i < template.len) {
+        if (template[i] == '$' and i + 1 < template.len and template[i + 1] == '{') {
+            const start = i + 2;
+            const end = std.mem.indexOfScalar(u8, template[start..], '}') orelse {
+                // No closing brace, treat as literal
+                try result.append(allocator, template[i]);
+                i += 1;
+                continue;
+            };
+            const var_expr = template[start .. start + end];
+            i = start + end + 1;
+
+            // Check for default value: ${VAR:-default}
+            var var_name: []const u8 = undefined;
+            var default_value: []const u8 = "";
+            if (std.mem.indexOf(u8, var_expr, ":-")) |colon| {
+                var_name = var_expr[0..colon];
+                default_value = var_expr[colon + 2 ..];
+            } else {
+                var_name = var_expr;
+            }
+
+            // Resolve variable
+            if (std.mem.eql(u8, var_name, "C_VALUE")) {
+                try result.appendSlice(allocator, current_value);
+            } else if (std.mem.startsWith(u8, var_name, "C_ARG")) {
+                const idx_str = var_name[5..];
+                const idx = std.fmt.parseInt(usize, idx_str, 10) catch {
+                    try result.appendSlice(allocator, default_value);
+                    continue;
+                };
+                if (idx < positional_args.len) {
+                    try result.appendSlice(allocator, positional_args[idx]);
+                } else {
+                    try result.appendSlice(allocator, default_value);
+                }
+            } else if (std.mem.startsWith(u8, var_name, "C_FLAG_")) {
+                const flag_name = var_name[7..];
+                // Convert to lowercase for lookup (flag names are lowercase)
+                var lower_buf: [128]u8 = undefined;
+                var lower_len: usize = 0;
+                for (flag_name) |c| {
+                    lower_buf[lower_len] = std.ascii.toLower(c);
+                    lower_len += 1;
+                }
+                const lower_key = lower_buf[0..lower_len];
+                if (flag_values.get(lower_key)) |val| {
+                    try result.appendSlice(allocator, val);
+                } else {
+                    try result.appendSlice(allocator, default_value);
+                }
+            } else {
+                // Unknown variable, use default
+                try result.appendSlice(allocator, default_value);
+            }
+        } else {
+            try result.append(allocator, template[i]);
+            i += 1;
+        }
+    }
+    return result.toOwnedSlice(allocator);
+}
+
 pub const Context = struct {
     cmd: spec.Command,
     args: []const []const u8,
@@ -56,7 +125,12 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
     var positional_count: usize = 0;
     var dash = false;
     var flag_parsing = true;
+    var has_positional = false; // for non-interspersed
     var flag_values = std.StringHashMap([]const u8).init(allocator);
+    var consumed_flag_names = std.StringHashMap(void).init(allocator); // for exclusiveflags
+
+    // Track positional args for variable expansion
+    var positional_args = std.ArrayList([]const u8).empty;
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -65,6 +139,21 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
         if (in_flag) |f| {
             in_flag = null;
             try flag_values.put(f.name(), arg);
+            // Handle nargs: consume additional positional args as flag values
+            if (f.nargs > 0) {
+                var n: i32 = 1;
+                while (n < f.nargs and i + 1 < args.len) : (n += 1) {
+                    i += 1;
+                    try flag_values.put(f.name(), args[i]);
+                }
+            } else if (f.nargs < 0) {
+                // nargs = -1 consumes all remaining args
+                while (i + 1 < args.len) {
+                    i += 1;
+                    try flag_values.put(f.name(), args[i]);
+                }
+            }
+            try consumed_flag_names.put(f.name(), {});
             continue;
         }
 
@@ -81,19 +170,28 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
                     const flag_value = arg[eq + 1 ..];
                     if (current.findFlag(flag_name)) |_| {
                         try flag_values.put(flag_name, flag_value);
+                        try consumed_flag_names.put(flag_name, {});
                     }
                     continue;
                 }
                 const name = arg[2..];
                 if (current.findFlag(name)) |f| {
+                    try consumed_flag_names.put(f.name(), {});
                     if (f.takes_value and !f.optarg) {
                         in_flag = f;
+                    } else if (f.optarg) {
+                        // Check if next arg exists and doesn't start with -
+                        if (i + 1 < args.len and args[i + 1].len > 0 and args[i + 1][0] != '-') {
+                            i += 1;
+                            try flag_values.put(f.name(), args[i]);
+                        }
                     }
                 }
             } else {
                 const name = arg[1..];
                 // Try whole-name match first (non-POSIX flags like -short)
                 if (current.findFlag(name)) |f| {
+                    try consumed_flag_names.put(f.name(), {});
                     if (f.takes_value and !f.optarg) {
                         in_flag = f;
                     }
@@ -103,6 +201,7 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
                     while (j < name.len) : (j += 1) {
                         const ch = name[j .. j + 1];
                         if (current.findFlag(ch)) |f| {
+                            try consumed_flag_names.put(f.name(), {});
                             if (f.takes_value and !f.optarg) {
                                 if (j < name.len - 1) {
                                     // Rest of string is attached value
@@ -131,19 +230,26 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
             if (current.findSubcommand(arg)) |sub| {
                 current = sub;
                 positional_count = 0;
+                has_positional = false;
                 if (current.parsing == .disabled) flag_parsing = false;
                 continue;
             }
         }
 
         positional_count += 1;
+        has_positional = true;
+        try positional_args.append(allocator, arg);
+        // Non-interspersed: after first positional, stop flag parsing
+        if (current.parsing == .non_interspersed) {
+            flag_parsing = false;
+        }
     }
 
     var ctx = Context{ .cmd = current, .args = args, .value = value, .flag_values = flag_values };
     _ = &ctx;
 
     if (in_flag) |f| {
-        return completeFlagValue(allocator, io, current, f, value, environ_map);
+        return completeFlagValueFull(allocator, io, current, f, value, environ_map, &flag_values, positional_args.items);
     }
 
     if (value.len > 0 and value[0] == '-' and flag_parsing) {
@@ -151,34 +257,31 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
             if (std.mem.indexOfScalar(u8, value, '=')) |eq| {
                 const flag_name = value[2..eq];
                 const prefix = value[eq + 1 ..];
-                return completeFlagValueWithPrefix(allocator, io, current, flag_name, prefix, environ_map);
+                return completeFlagValueWithPrefixFull(allocator, io, current, flag_name, prefix, environ_map, &flag_values, positional_args.items);
             }
-            return completeFlags(allocator, current, value);
+            return completeFlagsWithExclusive(allocator, current, value, &consumed_flag_names);
         }
         // Shorthand series: value is like "-v" or "-vf"
         // If only "-", complete all flags (longhand + shorthand)
         if (value.len == 1) {
-            return completeFlags(allocator, current, value);
+            return completeFlagsWithExclusive(allocator, current, value, &consumed_flag_names);
         }
         // Check for = delimiter (non-POSIX -flag=value or POSIX -f=value)
         if (std.mem.indexOfScalar(u8, value, '=')) |eq| {
             const flag_name = value[1..eq];
             const prefix = value[eq + 1 ..];
             if (current.findFlag(flag_name)) |_| {
-                return completeFlagValueWithPrefix(allocator, io, current, flag_name, prefix, environ_map);
+                return completeFlagValueWithPrefixFull(allocator, io, current, flag_name, prefix, environ_map, &flag_values, positional_args.items);
             }
         }
         // Multi-char single-dash: could be non-POSIX flag or shorthand series.
-        // If the whole typed part matches a flag name, complete as flag names.
-        // Otherwise, try shorthand series (POSIX single-char chaining).
         const shorthand_part = value[1..];
         if (shorthand_part.len > 1 and current.findFlag(shorthand_part) != null) {
-            return completeFlags(allocator, current, value);
+            return completeFlagsWithExclusive(allocator, current, value, &consumed_flag_names);
         }
         // Check if any flag has a multi-char shorthand (non-POSIX mode).
-        // If so, don't do shorthand series — just complete flag names by prefix.
         if (hasNonPosixFlags(current)) {
-            return completeFlags(allocator, current, value);
+            return completeFlagsWithExclusive(allocator, current, value, &consumed_flag_names);
         }
         return completeShorthandSeriesWithEnv(allocator, io, current, shorthand_part, environ_map);
     }
@@ -186,10 +289,10 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
     if (dash) {
         if (positional_count < current.completion.dash.len) {
             const pos = current.completion.dash[positional_count];
-            return resolveValuesWithEnv(allocator, io, pos, value, environ_map);
+            return resolveValuesWithEnv(allocator, io, pos, value, environ_map, &flag_values, positional_args.items);
         }
         if (current.completion.dashany.len > 0) {
-            return resolveValuesWithEnv(allocator, io, current.completion.dashany, value, environ_map);
+            return resolveValuesWithEnv(allocator, io, current.completion.dashany, value, environ_map, &flag_values, positional_args.items);
         }
         // Fall through to positional/positionalany if no dash completions defined
     }
@@ -198,12 +301,12 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
         var candidates = std.ArrayList(Candidate).empty;
         for (current.commands) |cmd| {
             if (!cmd.hidden and std.mem.startsWith(u8, cmd.name, value)) {
-                try candidates.append(allocator, .{ .value = cmd.name, .description = cmd.description });
+                try candidates.append(allocator, .{ .value = cmd.name, .description = cmd.description, .tag = cmd.group });
             }
         }
         if (current.completion.positional.len > 0) {
             const pos = current.completion.positional[0];
-            const resolved = try resolveValuesWithEnv(allocator, io, pos, value, environ_map);
+            const resolved = try resolveValuesWithEnv(allocator, io, pos, value, environ_map, &flag_values, positional_args.items);
             try candidates.appendSlice(allocator, resolved);
             allocator.free(resolved);
         }
@@ -212,11 +315,11 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
 
     if (positional_count < current.completion.positional.len) {
         const pos = current.completion.positional[positional_count];
-        return resolveValuesWithEnv(allocator, io, pos, value, environ_map);
+        return resolveValuesWithEnv(allocator, io, pos, value, environ_map, &flag_values, positional_args.items);
     }
 
     if (current.completion.positionalany.len > 0) {
-        return resolveValuesWithEnv(allocator, io, current.completion.positionalany, value, environ_map);
+        return resolveValuesWithEnv(allocator, io, current.completion.positionalany, value, environ_map, &flag_values, positional_args.items);
     }
 
     return &.{};
@@ -226,14 +329,17 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
 /// Static values (no macro) are parsed for tab-separated description/style.
 /// Macro values (starting with `$`) are passed to `action.resolveMacro`.
 fn resolveValues(allocator: std.mem.Allocator, io: std.Io, values: []const []const u8, prefix: []const u8) ![]Candidate {
-    return resolveValuesWithEnv(allocator, io, values, prefix, null);
+    return resolveValuesWithEnv(allocator, io, values, prefix, null, null, &.{});
 }
 
-fn resolveValuesWithEnv(allocator: std.mem.Allocator, io: std.Io, values: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]Candidate {
+fn resolveValuesWithEnv(allocator: std.mem.Allocator, io: std.Io, values: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map, flag_values: ?*const std.StringHashMap([]const u8), positional_args: []const []const u8) ![]Candidate {
     var candidates = std.ArrayList(Candidate).empty;
     for (values) |v| {
-        if (v.len > 0 and v[0] == '$') {
-            const macro_candidates = try action.resolveMacro(allocator, io, v, prefix, environ_map);
+        // Expand variables in the value template
+        const expanded = if (flag_values) |fv| try expandVariables(allocator, v, fv, positional_args, prefix) else v;
+        const actual_value = if (flag_values != null) expanded else v;
+        if (actual_value.len > 0 and actual_value[0] == '$') {
+            const macro_candidates = try action.resolveMacro(allocator, io, actual_value, prefix, environ_map);
             for (macro_candidates) |c| {
                 if (std.mem.startsWith(u8, c.value, prefix)) {
                     try candidates.append(allocator, c);
@@ -268,16 +374,27 @@ fn hasNonPosixFlags(cmd: spec.Command) bool {
 }
 
 fn completeFlags(allocator: std.mem.Allocator, cmd: spec.Command, prefix: []const u8) ![]Candidate {
+    return completeFlagsWithExclusive(allocator, cmd, prefix, null);
+}
+
+fn completeFlagsWithExclusive(allocator: std.mem.Allocator, cmd: spec.Command, prefix: []const u8, consumed_flags: ?*const std.StringHashMap(void)) ![]Candidate {
     var candidates = std.ArrayList(Candidate).empty;
 
     var current = cmd;
     while (true) {
         for (current.flags) |f| {
             if (f.hidden) continue;
+            // Skip flags in exclusive groups that already have a consumed member
+            if (consumed_flags) |cf| {
+                if (isFlagExcluded(current, f, cf)) continue;
+            }
             try addFlagCandidate(allocator, &candidates, f, prefix);
         }
         for (current.persistent_flags) |f| {
             if (f.hidden) continue;
+            if (consumed_flags) |cf| {
+                if (isFlagExcluded(current, f, cf)) continue;
+            }
             try addFlagCandidate(allocator, &candidates, f, prefix);
         }
         if (current.parent) |p| {
@@ -288,6 +405,23 @@ fn completeFlags(allocator: std.mem.Allocator, cmd: spec.Command, prefix: []cons
     }
 
     return candidates.toOwnedSlice(allocator);
+}
+
+/// Check if a flag is in an exclusive group where another member has been consumed.
+fn isFlagExcluded(cmd: spec.Command, f: Flag, consumed_flags: *const std.StringHashMap(void)) bool {
+    for (cmd.exclusive_flags) |group| {
+        for (group) |member| {
+            if (std.mem.eql(u8, member, f.name())) {
+                // This flag is in an exclusive group — check if another member was consumed
+                for (group) |other| {
+                    if (!std.mem.eql(u8, other, f.name()) and consumed_flags.contains(other)) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    return false;
 }
 
 fn addFlagCandidate(allocator: std.mem.Allocator, candidates: *std.ArrayList(Candidate), f: Flag, prefix: []const u8) !void {
@@ -394,12 +528,22 @@ fn completeShorthandSeriesWithEnv(allocator: std.mem.Allocator, io: std.Io, cmd:
 
 fn completeFlagValue(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, f: Flag, value: []const u8, environ_map: ?*const std.process.Environ.Map) ![]Candidate {
     const values = cmd.findFlagCompletion(f.name()) orelse return &.{};
-    return resolveValuesWithEnv(allocator, io, values, value, environ_map);
+    return resolveValuesWithEnv(allocator, io, values, value, environ_map, null, &.{});
 }
 
 fn completeFlagValueWithPrefix(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, flag_name: []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]Candidate {
     const values = cmd.findFlagCompletion(flag_name) orelse return &.{};
-    return resolveValuesWithEnv(allocator, io, values, prefix, environ_map);
+    return resolveValuesWithEnv(allocator, io, values, prefix, environ_map, null, &.{});
+}
+
+fn completeFlagValueFull(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, f: Flag, value: []const u8, environ_map: ?*const std.process.Environ.Map, flag_values: *const std.StringHashMap([]const u8), positional_args: []const []const u8) ![]Candidate {
+    const values = cmd.findFlagCompletion(f.name()) orelse return &.{};
+    return resolveValuesWithEnv(allocator, io, values, value, environ_map, flag_values, positional_args);
+}
+
+fn completeFlagValueWithPrefixFull(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, flag_name: []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map, flag_values: *const std.StringHashMap([]const u8), positional_args: []const []const u8) ![]Candidate {
+    const values = cmd.findFlagCompletion(flag_name) orelse return &.{};
+    return resolveValuesWithEnv(allocator, io, values, prefix, environ_map, flag_values, positional_args);
 }
 
 test "complete flag names" {
@@ -1144,6 +1288,74 @@ test "complete positionalany filters by prefix" {
     const result = try complete(arena.allocator(), std.testing.io, cmd, &.{ "mycmd", "e" });
     try std.testing.expectEqual(@as(usize, 1), result.len);
     try std.testing.expectEqualStrings("e2e", result[0].value);
+}
+
+test "non-interspersed parsing stops flag parsing after first positional" {
+    const yaml_src =
+        \\name: mycmd
+        \\parsing: non-interspersed
+        \\flags:
+        \\  --flag: a flag
+        \\completion:
+        \\  positionalany: [one, two]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    // After a positional arg, --flag should be treated as positional, not flag
+    // With no positionalany values starting with "--", we get 0 results
+    const result = try complete(arena.allocator(), std.testing.io, cmd, &.{ "mycmd", "file", "" });
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqualStrings("one", result[0].value);
+    try std.testing.expectEqualStrings("two", result[1].value);
+}
+
+test "exclusive flags exclude consumed group members" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  --add: add mode
+        \\  --delete: delete mode
+        \\  --list: list mode
+        \\exclusiveflags:
+        \\  - [add, delete]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    // After --add is consumed, --delete should be excluded from flag completion
+    const result = try complete(arena.allocator(), std.testing.io, cmd, &.{ "mycmd", "--add", "--" });
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqualStrings("--add", result[0].value);
+    try std.testing.expectEqualStrings("--list", result[1].value);
+}
+
+test "variable expansion uses C_VALUE in value template" {
+    // Direct test of expandVariables
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var fv = std.StringHashMap([]const u8).init(arena.allocator());
+    const result = try expandVariables(arena.allocator(), "${C_VALUE}-suffix", &fv, &.{}, "hello");
+    try std.testing.expectEqualStrings("hello-suffix", result);
+}
+
+test "group field sets tag on subcommand candidates" {
+    const yaml_src =
+        \\name: mycmd
+        \\commands:
+        \\  - name: build
+        \\    description: build
+        \\    group: build-group
+        \\  - name: run
+        \\    description: run
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), std.testing.io, cmd, &.{ "mycmd", "" });
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqualStrings("build-group", result[0].tag);
+    try std.testing.expectEqualStrings("", result[1].tag);
 }
 
 test "complete second positional position" {

@@ -10,6 +10,8 @@ pub const Flag = struct {
     hidden: bool = false,
     required: bool = false,
     name_as_shorthand: bool = false,
+    nargs: i32 = 0,
+    default: []const u8 = "",
 
     pub fn name(self: Flag) []const u8 {
         if (self.longhand.len > 0) return self.longhand;
