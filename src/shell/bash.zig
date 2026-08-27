@@ -74,11 +74,7 @@ pub fn formatOutput(allocator: std.mem.Allocator, candidates: []traverse.Candida
 
     for (candidates) |c| {
         if (show_desc and c.description.len > 0) {
-            if (c.style.len > 0) {
-                try buf.print(allocator, "{s}\t{s}\t{s}\n", .{ c.value, c.description, c.style });
-            } else {
-                try buf.print(allocator, "{s}\t{s}\n", .{ c.value, c.description });
-            }
+            try buf.print(allocator, "{s} ({s})\n", .{ c.value, c.description });
         } else {
             try buf.print(allocator, "{s}\n", .{c.value});
         }
@@ -129,8 +125,8 @@ test "format output with description" {
     };
     const out = try formatOutput(std.testing.allocator, @constCast(&candidates), "63");
     defer std.testing.allocator.free(out);
-    try std.testing.expect(std.mem.indexOf(u8, out, "json\tJSON format") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "yaml\tYAML format") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "json (JSON format)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "yaml (YAML format)") != null);
 }
 
 test "format output with description and style" {
@@ -140,6 +136,6 @@ test "format output with description and style" {
     };
     const out = try formatOutput(std.testing.allocator, @constCast(&candidates), "63");
     defer std.testing.allocator.free(out);
-    try std.testing.expect(std.mem.indexOf(u8, out, "json\tJSON format\tbold") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "yaml\tYAML format\titalic") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "json (JSON format)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "yaml (YAML format)") != null);
 }
