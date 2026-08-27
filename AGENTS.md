@@ -29,7 +29,8 @@ src/
 ├── traverse.zig   # Argument traversal state machine (the core completion engine)
 ├── action.zig     # Macro resolution stub (currently only returns static values, no macros)
 └── shell/
-    └── bash.zig   # Init script, snippet generation + output formatting
+    ├── bash.zig   # Init script, snippet generation + output formatting
+    └── export.zig # JSON export format (carapace-compatible)
 ```
 
 ## Architecture
@@ -37,13 +38,14 @@ src/
 1. **YAML parsing** (`yaml.zig`) → tagged union tree (`Value.{scalar, list, map}`)
 2. **Spec decoding** (`spec.zig`) → typed `Command` structs with `Flag`, `Completion`
 3. **Traversal** (`traverse.zig`) → walk CLI args, classify tokens, decide what to complete
-4. **Output** (`shell/bash.zig`) → format candidates or generate bash `complete -F` snippet
+4. **Output** (`shell/bash.zig`, `shell/export.zig`) → format candidates or generate bash `complete -F` snippet
 
 ```
 CARAPACE_SPECS / ~/.config/carapace/specs/ /etc/carapace/specs/
     → spec.zig (discover) → bash.zig (init snippet) → bash compgen
                        ↓
                     yaml.zig (parse) → spec.zig (decode) → traverse.zig (complete) → bash.zig (format)
+                                                                                  └→ export.zig (JSON)
 ```
 
 ## CLI Interface
@@ -60,6 +62,10 @@ carapace-tiny <name> bash
 # Completion callback — invoked by the bash snippet
 # Provides completions for the given command's spec
 carapace-tiny <name> bash <name> <args...>
+
+# Export completions as JSON (carapace export format)
+# Useful for debugging or external tooling
+carapace-tiny <name> export [<name> <args...>]
 ```
 
 The `CARAPACE_SPECS` environment variable is a colon-separated list of `name=path` pairs that overrides directory-based discovery. By default, specs are loaded from:
