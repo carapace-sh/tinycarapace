@@ -12,7 +12,7 @@ pub fn generateInitScript(allocator: std.mem.Allocator, specs: []const spec.Spec
         \\  export COMP_POINT
         \\  export COMP_TYPE
         \\
-        \\  local command="${{COMP_WORDS[0]}}" data compline="${{COMP_LINE:0:${{COMP_POINT}}}}"
+        \\  local command="${{COMP_WORDS[0]}}" data nospace compline="${{COMP_LINE:0:${{COMP_POINT}}}}"
         \\
         \\  data=$(echo "${{compline}}''" | xargs {s} "${{command}}" bash 2>/dev/null)
         \\  if [ $? -eq 1 ]; then
@@ -22,10 +22,14 @@ pub fn generateInitScript(allocator: std.mem.Allocator, specs: []const spec.Spec
         \\    fi
         \\  fi
         \\
+        \\  IFS=$'\x01' read -r nospace data <<< "${{data}}"
         \\  COMPREPLY=()
         \\  while IFS= read -r line; do
         \\    [ -n "$line" ] && COMPREPLY+=("$line")
         \\  done <<< "$data"
+        \\  [ "${{nospace}}" = true ] && compopt -o nospace
+        \\  local IFS=$'\n'
+        \\  [[ "${{COMPREPLY[*]}}" == "" ]] && COMPREPLY=()
         \\}}
         \\
     , .{ exe, exe, exe });
@@ -47,7 +51,7 @@ pub fn generateSnippet(allocator: std.mem.Allocator, name: []const u8) ![]const 
     try buf.print(allocator,
         \\_{s}_{s}_completion() {{
         \\  local compline="${{COMP_LINE:0:${{COMP_POINT}}}}"
-        \\  local data
+        \\  local data nospace
         \\  data=$(echo "${{compline}}''" | xargs {s} '{s}' bash 2>/dev/null)
         \\  if [ $? -ne 0 ]; then
         \\    data=$(echo "${{compline}}'" | xargs {s} '{s}' bash 2>/dev/null)
@@ -55,10 +59,14 @@ pub fn generateSnippet(allocator: std.mem.Allocator, name: []const u8) ![]const 
         \\      data=$(echo "${{compline}}\"" | xargs {s} '{s}' bash 2>/dev/null)
         \\    fi
         \\  fi
+        \\  IFS=$'\x01' read -r nospace data <<< "${{data}}"
         \\  COMPREPLY=()
         \\  while IFS= read -r line; do
         \\    [ -n "$line" ] && COMPREPLY+=("$line")
         \\  done <<< "$data"
+        \\  [ "${{nospace}}" = true ] && compopt -o nospace
+        \\  local IFS=$'\n'
+        \\  [[ "${{COMPREPLY[*]}}" == "" ]] && COMPREPLY=()
         \\}}
         \\complete -o noquote -F _{s}_{s}_completion {s}
         \\
@@ -69,6 +77,18 @@ pub fn generateSnippet(allocator: std.mem.Allocator, name: []const u8) ![]const 
 
 pub fn formatOutput(allocator: std.mem.Allocator, candidates: []traverse.Candidate, comp_type: ?[]const u8) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
+
+    // Compute global nospace flag
+    var has_nospace = false;
+    for (candidates) |c| {
+        if (c.nospace) {
+            has_nospace = true;
+            break;
+        }
+    }
+
+    // First line: nospace flag followed by \x01 delimiter
+    try buf.print(allocator, "{s}\x01", .{if (has_nospace) "true" else "false"});
 
     const show_desc = comp_type != null and std.mem.eql(u8, comp_type.?, "63");
 
@@ -138,4 +158,22 @@ test "format output with description and style" {
     defer std.testing.allocator.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "json (JSON format)") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "yaml (YAML format)") != null);
+}
+
+test "format output with nospace" {
+    const candidates = [_]traverse.Candidate{
+        .{ .value = "a/b", .nospace = true },
+    };
+    const out = try formatOutput(std.testing.allocator, @constCast(&candidates), null);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "true\x01") != null);
+}
+
+test "format output without nospace" {
+    const candidates = [_]traverse.Candidate{
+        .{ .value = "plain", .nospace = false },
+    };
+    const out = try formatOutput(std.testing.allocator, @constCast(&candidates), null);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.startsWith(u8, out, "false\x01"));
 }

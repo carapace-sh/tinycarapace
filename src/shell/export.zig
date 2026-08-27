@@ -20,18 +20,23 @@ fn writeJsonString(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []c
 pub fn formatOutput(allocator: std.mem.Allocator, candidates: []traverse.Candidate) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
 
-    try buf.appendSlice(allocator,
-        \\{
-        \\  "version": "
-    );
-    try buf.appendSlice(allocator, version_string);
-    try buf.appendSlice(allocator,
-        \\",
+    // Compute global nospace flag
+    var has_nospace = false;
+    for (candidates) |c| {
+        if (c.nospace) {
+            has_nospace = true;
+            break;
+        }
+    }
+
+    try buf.print(allocator,
+        \\{{
+        \\  "version": "{s}",
         \\  "messages": [],
-        \\  "nospace": "",
+        \\  "nospace": {s},
         \\  "usage": "",
         \\  "values": [
-    );
+    , .{ version_string, if (has_nospace) "true" else "false" });
 
     for (candidates, 0..) |c, i| {
         if (i > 0) try buf.appendSlice(allocator, ",");
@@ -52,6 +57,14 @@ pub fn formatOutput(allocator: std.mem.Allocator, candidates: []traverse.Candida
         if (c.style.len > 0) {
             try buf.appendSlice(allocator, ",\n      \"style\": \"");
             try writeJsonString(&buf, allocator, c.style);
+            try buf.appendSlice(allocator, "\"");
+        }
+        if (c.nospace) {
+            try buf.appendSlice(allocator, ",\n      \"nospace\": true");
+        }
+        if (c.tag.len > 0) {
+            try buf.appendSlice(allocator, ",\n      \"tag\": \"");
+            try writeJsonString(&buf, allocator, c.tag);
             try buf.appendSlice(allocator, "\"");
         }
         try buf.appendSlice(allocator, "\n    }");
@@ -122,4 +135,24 @@ test "export json escaping" {
     const out = try formatOutput(arena.allocator(), @constCast(&candidates));
     try std.testing.expect(std.mem.indexOf(u8, out, "quote\\\"test") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "line\\nbreak") != null);
+}
+
+test "export with nospace" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const candidates = [_]traverse.Candidate{
+        .{ .value = "a/b", .nospace = true },
+    };
+    const out = try formatOutput(arena.allocator(), @constCast(&candidates));
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"nospace\": true") != null);
+}
+
+test "export with tag" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const candidates = [_]traverse.Candidate{
+        .{ .value = "val", .tag = "mytag" },
+    };
+    const out = try formatOutput(arena.allocator(), @constCast(&candidates));
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"tag\": \"mytag\"") != null);
 }
