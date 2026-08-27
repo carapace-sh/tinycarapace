@@ -90,22 +90,6 @@ pub fn expandVariables(allocator: std.mem.Allocator, template: []const u8, flag_
     return result.toOwnedSlice(allocator);
 }
 
-pub const Context = struct {
-    cmd: spec.Command,
-    args: []const []const u8,
-    value: []const u8,
-    flag_values: std.StringHashMap([]const u8),
-
-    pub fn init(allocator: std.mem.Allocator, cmd: spec.Command, args: []const []const u8, value: []const u8) Context {
-        return .{
-            .cmd = cmd,
-            .args = args,
-            .value = value,
-            .flag_values = std.StringHashMap([]const u8).init(allocator),
-        };
-    }
-};
-
 pub fn complete(allocator: std.mem.Allocator, io: std.Io, root: spec.Command, cmdline: []const []const u8) ![]Candidate {
     return completeWithEnv(allocator, io, root, cmdline, null);
 }
@@ -125,7 +109,6 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
     var positional_count: usize = 0;
     var dash = false;
     var flag_parsing = true;
-    var has_positional = false; // for non-interspersed
     var flag_values = std.StringHashMap([]const u8).init(allocator);
     var consumed_flag_names = std.StringHashMap(void).init(allocator); // for exclusiveflags
 
@@ -230,23 +213,18 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
             if (current.findSubcommand(arg)) |sub| {
                 current = sub;
                 positional_count = 0;
-                has_positional = false;
                 if (current.parsing == .disabled) flag_parsing = false;
                 continue;
             }
         }
 
         positional_count += 1;
-        has_positional = true;
         try positional_args.append(allocator, arg);
         // Non-interspersed: after first positional, stop flag parsing
         if (current.parsing == .non_interspersed) {
             flag_parsing = false;
         }
     }
-
-    var ctx = Context{ .cmd = current, .args = args, .value = value, .flag_values = flag_values };
-    _ = &ctx;
 
     if (in_flag) |f| {
         return completeFlagValueFull(allocator, io, current, f, value, environ_map, &flag_values, positional_args.items);
@@ -335,20 +313,45 @@ fn resolveValues(allocator: std.mem.Allocator, io: std.Io, values: []const []con
 fn resolveValuesWithEnv(allocator: std.mem.Allocator, io: std.Io, values: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map, flag_values: ?*const std.StringHashMap([]const u8), positional_args: []const []const u8) ![]Candidate {
     var candidates = std.ArrayList(Candidate).empty;
     for (values) |v| {
-        // Expand variables in the value template
-        const expanded = if (flag_values) |fv| try expandVariables(allocator, v, fv, positional_args, prefix) else v;
-        const actual_value = if (flag_values != null) expanded else v;
-        if (actual_value.len > 0 and actual_value[0] == '$') {
-            const macro_candidates = try action.resolveMacro(allocator, io, actual_value, prefix, environ_map);
-            for (macro_candidates) |c| {
-                if (std.mem.startsWith(u8, c.value, prefix)) {
-                    try candidates.append(allocator, c);
+        if (flag_values) |fv| {
+            const expanded = try expandVariables(allocator, v, fv, positional_args, prefix);
+            defer allocator.free(expanded);
+            if (expanded.len > 0 and expanded[0] == '$') {
+                const macro_candidates = try action.resolveMacro(allocator, io, expanded, prefix, environ_map);
+                for (macro_candidates) |c| {
+                    if (std.mem.startsWith(u8, c.value, prefix)) {
+                        try candidates.append(allocator, .{
+                            .value = try allocator.dupe(u8, c.value),
+                            .description = try allocator.dupe(u8, c.description),
+                            .style = try allocator.dupe(u8, c.style),
+                            .nospace = c.nospace,
+                            .tag = try allocator.dupe(u8, c.tag),
+                        });
+                    }
+                }
+            } else {
+                const parsed = splitValue(expanded);
+                if (std.mem.startsWith(u8, parsed.value, prefix)) {
+                    try candidates.append(allocator, .{
+                        .value = try allocator.dupe(u8, parsed.value),
+                        .description = try allocator.dupe(u8, parsed.description),
+                        .style = try allocator.dupe(u8, parsed.style),
+                    });
                 }
             }
         } else {
-            const parsed = splitValue(v);
-            if (std.mem.startsWith(u8, parsed.value, prefix)) {
-                try candidates.append(allocator, .{ .value = parsed.value, .description = parsed.description, .style = parsed.style });
+            if (v.len > 0 and v[0] == '$') {
+                const macro_candidates = try action.resolveMacro(allocator, io, v, prefix, environ_map);
+                for (macro_candidates) |c| {
+                    if (std.mem.startsWith(u8, c.value, prefix)) {
+                        try candidates.append(allocator, c);
+                    }
+                }
+            } else {
+                const parsed = splitValue(v);
+                if (std.mem.startsWith(u8, parsed.value, prefix)) {
+                    try candidates.append(allocator, .{ .value = parsed.value, .description = parsed.description, .style = parsed.style });
+                }
             }
         }
     }
