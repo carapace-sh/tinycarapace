@@ -33,8 +33,6 @@ pub fn main(init: std.process.Init) !u8 {
         defer arena.deinit();
 
         var cmdline_args: std.ArrayList([]const u8) = .empty;
-        // Always prepend the command name (traverse expects it as first arg, skips it)
-        try cmdline_args.append(arena.allocator(), std.mem.span(argv[1]));
         if (argv.len > 3) {
             for (argv[3..]) |a| {
                 try cmdline_args.append(arena.allocator(), std.mem.span(a));
