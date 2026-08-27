@@ -6,7 +6,8 @@ pub fn generateSnippet(allocator: std.mem.Allocator, cmd: spec.Command, spec_pat
     var buf: std.ArrayList(u8) = .empty;
 
     const name = cmd.name;
-    const exe = "tinycarapace";
+    const exe = "carapace-tiny";
+    const func_prefix = "carapace_tiny";
 
     try buf.print(allocator,
         \\_{s}_{s}_completion() {{
@@ -26,7 +27,7 @@ pub fn generateSnippet(allocator: std.mem.Allocator, cmd: spec.Command, spec_pat
         \\}}
         \\complete -o noquote -F _{s}_{s}_completion {s}
         \\
-    , .{ exe, name, exe, spec_path, exe, spec_path, exe, spec_path, exe, name, name });
+    , .{ func_prefix, name, exe, spec_path, exe, spec_path, exe, spec_path, func_prefix, name, name });
 
     return buf.toOwnedSlice(allocator);
 }
@@ -57,7 +58,7 @@ test "snippet contains function name" {
     defer arena.deinit();
     const cmd = try @import("../spec.zig").loadSpec(arena.allocator(), yaml_src);
     const snippet = try generateSnippet(arena.allocator(), cmd, "/tmp/spec.yaml");
-    try std.testing.expect(std.mem.indexOf(u8, snippet, "_tinycarapace_mycmd_completion") != null);
+    try std.testing.expect(std.mem.indexOf(u8, snippet, "_carapace_tiny_mycmd_completion") != null);
     try std.testing.expect(std.mem.indexOf(u8, snippet, "complete") != null);
 }
 

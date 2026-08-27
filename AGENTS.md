@@ -1,4 +1,4 @@
-# tinycarapace — Agent Guide
+# carapace-tiny — Agent Guide
 
 A minimal [carapace-spec](https://github.com/carapace-sh/carapace-spec) interpreter in Zig for resource-constrained environments (docker containers, alpine, scratch images). It reads the standard YAML spec format and generates shell completion — primarily bash.
 
@@ -7,7 +7,7 @@ A minimal [carapace-spec](https://github.com/carapace-sh/carapace-spec) interpre
 ## Essential Commands
 
 ```bash
-zig build                  # Build (outputs to zig-out/bin/tinycarapace)
+zig build                  # Build (outputs to zig-out/bin/carapace-tiny)
 zig build test             # Run all tests (no output = success)
 zig build -Doptimize=ReleaseFast -Dstrip=true  # Release build
 ```
@@ -22,7 +22,7 @@ zig build -Dtarget=aarch64-linux-musl
 
 ```
 src/
-├── main.zig       # CLI entry: `tinycarapace spec.yaml` (snippet) or `_complete bash <args>` (candidates)
+├── main.zig       # CLI entry: `carapace-tiny spec.yaml` (snippet) or `_complete bash <args>` (candidates)
 ├── spec.zig       # Command/Flag/Completion types + YAML → struct decode
 ├── yaml.zig       # ~676 LOC hand-written YAML subset parser (recursive descent, no deps)
 ├── flag.zig       # Flag string parser (compact syntax: --optarg?=, --repeatable*, --hidden&)
@@ -47,10 +47,10 @@ spec.yaml → yaml.zig (parse) → spec.zig (decode) → traverse.zig (complete)
 
 ```bash
 # Generate bash completion snippet (source this)
-tinycarapace spec.yaml
+carapace-tiny spec.yaml
 
 # Internal completion callback (invoked by the snippet)
-tinycarapace spec.yaml _complete bash <args...>
+carapace-tiny spec.yaml _complete bash <args...>
 ```
 
 ## Key Patterns & Gotchas
@@ -112,7 +112,7 @@ Examples: `--output=`, `--optarg?=`, `--repeatable*`, `-v`, `-o, --output=`
 
 ### Bash Snippet
 
-- Function name: `_tinycarapace_<name>_completion`
+- Function name: `_carapace_tiny_<name>_completion`
 - Uses `xargs --` to pass the command line safely
 - Three-stage open-quote retry (single quotes, then double quotes, then none)
 - `complete -o noquote -F` — no `-o nospace` (POC always appends space)

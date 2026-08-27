@@ -9,7 +9,7 @@ pub fn main(init: std.process.Init) !u8 {
 
     const argv = init.minimal.args.vector;
     if (argv.len < 2) {
-        std.debug.print("usage: tinycarapace <spec.yaml> [_complete <shell> <args...>]\n", .{});
+        std.debug.print("usage: carapace-tiny <spec.yaml> [_complete <shell> <args...>]\n", .{});
         return 1;
     }
 

@@ -1,6 +1,6 @@
 .{
-    .fingerprint = 0x24112b12e03e90dd,
-    .name = .tinycarapace,
+    .fingerprint = 0x52ebefa758d154ac,
+    .name = .carapace_tiny,
     .version = "0.1.0",
     .minimum_zig_version = "0.15.0",
     .dependencies = .{},

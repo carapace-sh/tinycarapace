@@ -1,4 +1,4 @@
-# tinycarapace — Plan
+# carapace-tiny — Plan
 
 A minimal carapace-spec interpreter for resource-constrained environments
 (docker containers, alpine, scratch images, embedded shells). It reads the same
@@ -38,7 +38,7 @@ and provides shell completion — primarily **bash**, with a stretch goal of a
 
 ## Why Zig
 
-| Concern | Go (carapace-spec) | Zig (tinycarapace) |
+| Concern | Go (carapace-spec) | Zig (carapace-tiny) |
 |---------|--------------------|--------------------|
 | Binary size (static, stripped) | ~15 MB | **<500 KB** |
 | Runtime | Go runtime + GC | None (bare metal) |
@@ -87,7 +87,7 @@ field set.
 
 ```
 ┌────────────────┐     ┌──────────────────┐     ┌──────────────────┐
-│  spec.yaml     │────▶│  tinycarapace     │────▶│  completion      │
+│  spec.yaml     │────▶│  carapace-tiny     │────▶│  completion      │
 │ (carapace-spec │     │  - parse YAML     │     │  candidates      │
 │  subset)       │     │  - traverse tree  │     │  (newline-       │
 └────────────────┘     │  - resolve macros │     │   delimited)     │
@@ -98,7 +98,7 @@ field set.
 ### Source layout
 
 ```
-tinycarapace/
+carapace-tiny/
 ├── plan.md                  ← this file
 ├── build.zig                ← build script (cross-compile targets)
 ├── build.zig.zon            ← dependency manifest (empty — no deps)
@@ -238,21 +238,21 @@ are offered together.
 
 ### Snippet
 
-Generated when invoked as `tinycarapace spec.yaml` (no extra args):
+Generated when invoked as `carapace-tiny spec.yaml` (no extra args):
 
 ```bash
-_tinycarapace_<name>_completion() {
+_carapace_tiny_<name>_completion() {
   local compline="${COMP_LINE:0:${COMP_POINT}}"
   local data
-  data=$(echo "${compline}''" | xargs -- tinycarapace '<specpath>' _complete bash 2>/dev/null)
-  [ $? -ne 0 ] && data=$(echo "${compline}'" | xargs -- tinycarapace '<specpath>' _complete bash 2>/dev/null)
-  [ $? -ne 0 ] && data=$(echo "${compline}\"" | xargs -- tinycarapace '<specpath>' _complete bash 2>/dev/null)
+  data=$(echo "${compline}''" | xargs -- carapace-tiny '<specpath>' _complete bash 2>/dev/null)
+  [ $? -ne 0 ] && data=$(echo "${compline}'" | xargs -- carapace-tiny '<specpath>' _complete bash 2>/dev/null)
+  [ $? -ne 0 ] && data=$(echo "${compline}\"" | xargs -- carapace-tiny '<specpath>' _complete bash 2>/dev/null)
   COMPREPLY=()
   while IFS= read -r line; do
     [ -n "$line" ] && COMPREPLY+=("$line")
   done <<< "$data"
 }
-complete -o noquote -F _tinycarapace_<name>_completion <name>
+complete -o noquote -F _carapace_tiny_<name>_completion <name>
 ```
 
 Differences from carapace's snippet:
@@ -314,7 +314,7 @@ Dash's line editor doesn't expose hooks. There's no way to intercept TAB.
 Replace the command with a shell function that:
 1. Reads the entire line with `read -e -p` (dash supports `read -e` for
    line editing on systems with libedit).
-2. On TAB, calls `tinycarapace` with the partial line, gets candidates.
+2. On TAB, calls `carapace-tiny` with the partial line, gets candidates.
 3. Displays candidates and re-prompts.
 
 ```sh
@@ -355,18 +355,18 @@ Write a small interactive line reader that:
 5. On Enter (`\r` or `\n`), restores terminal, executes the command via
    `std.process.execv`.
 
-This is essentially a **~150-line minimal readline** embedded in tinycarapace,
+This is essentially a **~150-line minimal readline** embedded in carapace-tiny,
 invoked as:
 
 ```sh
 # In dash:
-eval "$(tinycarapace spec.yaml --dash-shell)"
-# This defines a function `mycmd` that calls tinycarapace's interactive reader
+eval "$(carapace-tiny spec.yaml --dash-shell)"
+# This defines a function `mycmd` that calls carapace-tiny's interactive reader
 ```
 
 Or run as a wrapper:
 ```sh
-alias mycmd='tinycarapace spec.yaml --dash-run mycmd'
+alias mycmd='carapace-tiny spec.yaml --dash-run mycmd'
 ```
 
 Zig makes this particularly clean because:
@@ -388,7 +388,7 @@ Defeats the "small environment" purpose.
 1. **Phase 1**: bash completion only. Get the spec interpreter + bash
    snippet working. This proves the core value.
 2. **Phase 2**: Add the dash minimal readline as a separate subcommand
-   (`tinycarapace spec.yaml --dash-repl`). Start with a dead-simple
+   (`carapace-tiny spec.yaml --dash-repl`). Start with a dead-simple
    implementation: TAB cycles through candidates inline (like bash
    `menu-complete`), no multi-column display. ~150 lines of Zig.
 3. **Phase 3**: If dash readline proves useful, add a proper menu with
@@ -401,7 +401,7 @@ affect the bash path at all, and it adds no dependencies (raw mode via
 ### Dash readline design sketch (Phase 2)
 
 ```
-tinycarapace <spec> --dash-repl
+carapace-tiny <spec> --dash-repl
   → enter raw mode (ioctl TCSETS, disable ICANON|ECHO|ISIG)
   → install SIGINT handler → restore terminal on signal
   → loop:
@@ -433,7 +433,7 @@ Enter to run. This is genuinely useful in a container.
 - [ ] `src/traverse.zig`: Argument classification state machine
 - [ ] `src/action.zig`: Static values + shell macros (`$sh`, `$bash`, `$files`, `$directories`)
 - [ ] `src/shell/bash.zig`: Snippet generation + output formatting
-- [ ] `src/main.zig`: CLI — `tinycarapace <spec.yaml>` → snippet, `tinycarapace <spec.yaml> _complete bash <args...>` → candidates
+- [ ] `src/main.zig`: CLI — `carapace-tiny <spec.yaml>` → snippet, `carapace-tiny <spec.yaml> _complete bash <args...>` → candidates
 - [ ] `example/example.yaml`: Test spec with flags, subcommands, static + dynamic completion
 - [ ] `test/traverse_test.zig`: Table-driven tests using `std.testing`
 
@@ -499,15 +499,15 @@ populated. This requires bash to be installed (skip if not, using
 
 ```
 # Generate bash completion snippet (source this)
-tinycarapace spec.yaml
+carapace-tiny spec.yaml
 # → prints bash snippet to stdout
 
 # Internal completion callback (invoked by the snippet)
-tinycarapace spec.yaml _complete bash <args...>
+carapace-tiny spec.yaml _complete bash <args...>
 # → prints newline-delimited candidates
 
 # (Phase 2) Interactive dash REPL with completion
-tinycarapace spec.yaml --dash-repl
+carapace-tiny spec.yaml --dash-repl
 ```
 
 The `_complete` subcommand is the internal protocol — users never call it
@@ -541,8 +541,8 @@ zig build test
 |--------|------------|
 | carapace-bin (Go) | ~30 MB (static, with all completers) |
 | carapace-spec (Go) | ~15 MB |
-| **tinycarapace** (Zig, ReleaseFast, stripped) | **<500 KB** |
-| tinycarapace (UPX compressed) | **<200 KB** |
+| **carapace-tiny** (Zig, ReleaseFast, stripped) | **<500 KB** |
+| carapace-tiny (UPX compressed) | **<200 KB** |
 
 Zig has no runtime, no GC, no garbage collector metadata — the binary is
 just our code + the YAML parser + libc stubs (or fully static with musl).
