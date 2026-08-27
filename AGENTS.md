@@ -7,9 +7,9 @@ A minimal [carapace-spec](https://github.com/carapace-sh/carapace-spec) interpre
 ## Essential Commands
 
 ```bash
-zig build                  # Build (outputs to zig-out/bin/carapace-tiny)
-zig build test             # Run all tests (no output = success)
-zig build -Doptimize=ReleaseFast -Dstrip=true  # Release build
+zig build              # Build (outputs to zig-out/bin/carapace-tiny)
+zig build test         # Run all tests (no output = success)
+zig build -Doptimize=ReleaseFast  # Release build (strip with zig build && strip zig-out/bin/carapace-tiny)
 ```
 
 Cross-compile (no extra toolchain needed):
