@@ -60,24 +60,76 @@ pub const SpecInfo = struct {
     path: []const u8,
 };
 
-pub fn discoverSpecs(src: []const u8, allocator: std.mem.Allocator) ![]SpecInfo {
-    if (src.len == 0) return &.{};
-
+pub fn discoverSpecs(io: std.Io, environ: *const std.process.Environ.Map, allocator: std.mem.Allocator) ![]SpecInfo {
     var specs = std.ArrayList(SpecInfo).empty;
-    var it = std.mem.splitScalar(u8, src, ':');
-    while (it.next()) |pair| {
-        if (std.mem.indexOfScalar(u8, pair, '=')) |eq| {
-            const name = std.mem.trim(u8, pair[0..eq], " \t");
-            const path = std.mem.trim(u8, pair[eq + 1 ..], " \t");
-            if (name.len > 0 and path.len > 0) {
-                try specs.append(allocator, .{
-                    .name = try allocator.dupe(u8, name),
-                    .path = try allocator.dupe(u8, path),
-                });
+
+    // Parse CARAPACE_SPECS env var override
+    if (environ.get("CARAPACE_SPECS")) |src| {
+        if (src.len > 0) {
+            var it = std.mem.splitScalar(u8, src, ':');
+            while (it.next()) |pair| {
+                if (std.mem.indexOfScalar(u8, pair, '=')) |eq| {
+                    const name = std.mem.trim(u8, pair[0..eq], " \t");
+                    const path = std.mem.trim(u8, pair[eq + 1 ..], " \t");
+                    if (name.len > 0 and path.len > 0) {
+                        try specs.append(allocator, .{
+                            .name = try allocator.dupe(u8, name),
+                            .path = try allocator.dupe(u8, path),
+                        });
+                    }
+                }
             }
         }
     }
+
+    // System-wide specs
+    try addSpecsFromDir(io, allocator, &specs, "/etc/carapace/specs");
+
+    // User specs: $XDG_CONFIG_HOME/carapace/specs or ~/.config/carapace/specs
+    if (environ.get("XDG_CONFIG_HOME")) |xdg| {
+        const user_specs = try std.fs.path.join(allocator, &.{ xdg, "carapace", "specs" });
+        try addSpecsFromDir(io, allocator, &specs, user_specs);
+    } else if (environ.get("HOME")) |home| {
+        const user_specs = try std.fs.path.join(allocator, &.{ home, ".config", "carapace", "specs" });
+        try addSpecsFromDir(io, allocator, &specs, user_specs);
+    }
+
     return specs.toOwnedSlice(allocator);
+}
+
+fn addSpecsFromDir(io: std.Io, allocator: std.mem.Allocator, specs: *std.ArrayList(SpecInfo), dir_path: []const u8) !void {
+    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound, error.NotDir, error.AccessDenied => return,
+        else => return err,
+    };
+    defer dir.close(io);
+
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind != .file) continue;
+        const name_slice = entry.name;
+        if (name_slice.len < 6) continue;
+        if (name_slice[0] == '.') continue;
+        if (!std.mem.eql(u8, name_slice[name_slice.len - 5 ..], ".yaml")) continue;
+
+        const stem = name_slice[0 .. name_slice.len - 5];
+        // Skip variant files (e.g. "app.linux.yaml")
+        if (std.mem.indexOfScalar(u8, stem, '.')) |_| continue;
+
+        // Skip if already registered (env var takes precedence)
+        if (findSpec(specs.items, stem)) |_| continue;
+
+        // Validate file is readable (silently skip unreadable files)
+        dir.access(io, name_slice, .{ .read = true }) catch |err| switch (err) {
+            error.FileNotFound, error.AccessDenied => continue,
+            else => return err,
+        };
+
+        try specs.append(allocator, .{
+            .name = try allocator.dupe(u8, stem),
+            .path = try std.fs.path.join(allocator, &.{ dir_path, name_slice }),
+        });
+    }
 }
 
 pub fn findSpec(specs: []SpecInfo, name: []const u8) ?SpecInfo {

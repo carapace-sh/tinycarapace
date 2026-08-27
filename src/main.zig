@@ -13,13 +13,11 @@ pub fn main(init: std.process.Init) !u8 {
         return 1;
     }
 
-    const spec_env = if (init.environ_map.get("CARAPACE_SPECS")) |s| s else "";
-
     // carapace-tiny _carapace [bash] → init script
     if (std.mem.eql(u8, std.mem.span(argv[1]), "_carapace")) {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
-        const specs = try spec.discoverSpecs(spec_env, arena.allocator());
+        const specs = try spec.discoverSpecs(init.io, init.environ_map, arena.allocator());
         if (specs.len == 0) return 0;
         const script = try bash.generateInitScript(arena.allocator(), specs);
         std.Io.File.stdout().writeStreamingAll(init.io, script) catch {};
@@ -51,8 +49,8 @@ pub fn main(init: std.process.Init) !u8 {
             }
         }
 
-        // Look up spec from CARAPACE_SPECS
-        const specs = try spec.discoverSpecs(spec_env, arena.allocator());
+        // Look up spec from env var, user dirs, or system dirs
+        const specs = try spec.discoverSpecs(init.io, init.environ_map, arena.allocator());
         const spec_info = spec.findSpec(specs, name) orelse {
             std.debug.print("error: unknown command: {s}\n", .{name});
             return 1;

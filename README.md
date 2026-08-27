@@ -7,8 +7,9 @@ Designed for resource-constrained environments (containers, alpine, scratch imag
 ## Quick start
 
 ```bash
-# Set up specs
-export CARAPACE_SPECS="myapp=/path/to/myapp.yaml"
+# Drop a spec file into the user directory
+mkdir -p ~/.config/carapace/specs
+cp myapp.yaml ~/.config/carapace/specs/
 
 # Source the init script to register all completers
 source <(carapace-tiny _carapace bash)
@@ -35,11 +36,13 @@ carapace-tiny <name> bash                        # Snippet for one command
 carapace-tiny <name> bash <name> <args...>       # Completion callback (internal)
 ```
 
-Specs are registered via the `CARAPACE_SPECS` environment variable:
+Specs are discovered from these directories (in order of precedence):
 
-```bash
-export CARAPACE_SPECS="chmod=/etc/carapace/specs/chmod.yaml:git=/etc/carapace/specs/git.yaml"
-```
+1. `$CARAPACE_SPECS` — colon-separated `name=path` pairs (override)
+2. `$XDG_CONFIG_HOME/carapace/specs/` or `~/.config/carapace/specs/` — user specs
+3. `/etc/carapace/specs/` — system-wide specs
+
+So you can just drop `.yaml` files into one of the directories and they'll be picked up automatically.
 
 ## How it works
 

@@ -40,7 +40,8 @@ src/
 4. **Output** (`shell/bash.zig`) → format candidates or generate bash `complete -F` snippet
 
 ```
-CARAPACE_SPECS env → spec.zig (discover) → bash.zig (init snippet) → bash compgen
+CARAPACE_SPECS / ~/.config/carapace/specs/ /etc/carapace/specs/
+    → spec.zig (discover) → bash.zig (init snippet) → bash compgen
                        ↓
                     yaml.zig (parse) → spec.zig (decode) → traverse.zig (complete) → bash.zig (format)
 ```
@@ -61,10 +62,10 @@ carapace-tiny <name> bash
 carapace-tiny <name> bash <name> <args...>
 ```
 
-The `CARAPACE_SPECS` environment variable is a colon-separated list of `name=path` pairs:
-```bash
-export CARAPACE_SPECS="chmod=/path/to/chmod.yaml:git=/path/to/git.yaml"
-```
+The `CARAPACE_SPECS` environment variable is a colon-separated list of `name=path` pairs that overrides directory-based discovery. By default, specs are loaded from:
+
+- `$XDG_CONFIG_HOME/carapace/specs/` or `~/.config/carapace/specs/`
+- `/etc/carapace/specs/`
 
 ## Key Patterns & Gotchas
 
