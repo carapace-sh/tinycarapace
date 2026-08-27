@@ -22,8 +22,7 @@ pub fn generateInitScript(allocator: std.mem.Allocator, specs: []const spec.Spec
         \\    fi
         \\  fi
         \\
-        \\  read -r nospace <<< "${{data%%$'\x01'*}}"
-        \\  data="${{data#*$'\x01'}}"
+        \\  IFS=$'\x01' read -r -d '' nospace data <<< "${{data}}"
         \\  COMPREPLY=()
         \\  while IFS= read -r line; do
         \\    [ -n "$line" ] && COMPREPLY+=("$line")
@@ -60,8 +59,7 @@ pub fn generateSnippet(allocator: std.mem.Allocator, name: []const u8) ![]const 
         \\      data=$(echo "${{compline}}\"" | xargs {s} '{s}' bash 2>/dev/null)
         \\    fi
         \\  fi
-        \\  read -r nospace <<< "${{data%%$'\x01'*}}"
-        \\  data="${{data#*$'\x01'}}"
+        \\  IFS=$'\x01' read -r -d '' nospace data <<< "${{data}}"
         \\  COMPREPLY=()
         \\  while IFS= read -r line; do
         \\    [ -n "$line" ] && COMPREPLY+=("$line")
