@@ -836,14 +836,25 @@ fn resolveBridge(allocator: std.mem.Allocator, io: std.Io, macro: []const u8, pr
     const args_part = macro[paren + 1 .. macro.len - 1];
     if (args_part.len == 0) return &.{};
 
-    // Split command args by comma
-    const cmd_args = try parseFlowList(allocator, args_part);
-    defer allocator.free(cmd_args);
+    // Split command args by comma (simple split, not YAML flow list)
+    var cmd_args = std.ArrayList([]const u8).empty;
+    var arg_it = std.mem.splitScalar(u8, args_part, ',');
+    while (arg_it.next()) |arg| {
+        const trimmed = std.mem.trim(u8, arg, " \t");
+        if (trimmed.len > 0) {
+            // Strip surrounding quotes if present
+            const unquoted = if (trimmed.len >= 2 and (trimmed[0] == '\'' and trimmed[trimmed.len - 1] == '\'' or trimmed[0] == '"' and trimmed[trimmed.len - 1] == '"'))
+                trimmed[1 .. trimmed.len - 1]
+            else
+                trimmed;
+            try cmd_args.append(allocator, try allocator.dupe(u8, unquoted));
+        }
+    }
 
-    if (cmd_args.len == 0) return &.{};
+    if (cmd_args.items.len == 0) return &.{};
 
-    const cmd = cmd_args[0];
-    const bridge_args = if (cmd_args.len > 1) cmd_args[1..] else &.{};
+    const cmd = cmd_args.items[0];
+    const bridge_args = cmd_args.items[1..];
 
     // Dispatch to the appropriate bridge handler
     if (std.mem.eql(u8, bridge_name, "cobra")) {

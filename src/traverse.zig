@@ -113,6 +113,20 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
     // Track positional args for variable expansion
     var positional_args = std.ArrayList([]const u8).empty;
 
+    // Parse CARAPACE_BRIDGES for implicit bridge fallback
+    var bridge_names: []const []const u8 = &.{};
+    if (environ_map) |env| {
+        if (env.get("CARAPACE_BRIDGES")) |be| {
+            var list = std.ArrayList([]const u8).empty;
+            var it = std.mem.splitScalar(u8, be, ',');
+            while (it.next()) |name| {
+                const trimmed = std.mem.trim(u8, name, " \t");
+                if (trimmed.len > 0) try list.append(allocator, trimmed);
+            }
+            bridge_names = try list.toOwnedSlice(allocator);
+        }
+    }
+
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
@@ -296,6 +310,13 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
 
     if (current.completion.positionalany.len > 0) {
         return resolveValuesWithEnv(allocator, io, current.completion.positionalany, value, environ_map, &flag_values, positional_args.items);
+    }
+
+    // Bridge fallback: if no completions found and command has a run field,
+    // try implicit bridges from CARAPACE_BRIDGES
+    if (current.run.len > 0 and bridge_names.len > 0) {
+        const bridge_candidates = try resolveBridgeFallback(allocator, io, current.run, args, value, bridge_names, environ_map);
+        if (bridge_candidates.len > 0) return bridge_candidates;
     }
 
     return &.{};
@@ -525,6 +546,83 @@ fn completeShorthandSeriesWithEnv(allocator: std.mem.Allocator, io: std.Io, cmd:
         }
     }
     return candidates.toOwnedSlice(allocator);
+}
+
+/// Try implicit bridge fallback for commands with a `run` field but no completions.
+/// Parses the run field to extract the aliased command, then tries each bridge
+/// from CARAPACE_BRIDGES in order.
+fn resolveBridgeFallback(allocator: std.mem.Allocator, io: std.Io, run: []const u8, args: []const []const u8, value: []const u8, bridge_names: []const []const u8, environ_map: ?*const std.process.Environ.Map) ![]Candidate {
+    // Extract the command name from the run field
+    const cmd_name = extractAliasedCommand(run) orelse return &.{};
+
+    // Try each bridge from CARAPACE_BRIDGES
+    for (bridge_names) |bridge_name| {
+        const trimmed = std.mem.trim(u8, bridge_name, " \t");
+        if (trimmed.len == 0) continue;
+
+        // Build the macro string: $bridge.name(cmd, arg1, arg2, value)
+        var macro = std.ArrayList(u8).empty;
+        try macro.appendSlice(allocator, "$bridge.");
+        try macro.appendSlice(allocator, trimmed);
+        try macro.append(allocator, '(');
+        try macro.appendSlice(allocator, cmd_name);
+        for (args) |a| {
+            try macro.appendSlice(allocator, ", ");
+            try macro.appendSlice(allocator, a);
+        }
+        if (value.len > 0) {
+            try macro.appendSlice(allocator, ", ");
+            try macro.appendSlice(allocator, value);
+        }
+        try macro.append(allocator, ')');
+
+        // Try to resolve via the bridge
+        const candidates = action.resolveMacro(allocator, io, macro.items, value, environ_map) catch continue;
+        if (candidates.len > 0) return candidates;
+    }
+
+    return &.{};
+}
+
+/// Extract the aliased command name from a run field.
+/// Supports: "[kubectl, ...]", "kubectl ...", "$(kubectl ...)"
+fn extractAliasedCommand(run: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, run, " \t");
+    if (trimmed.len == 0) return null;
+
+    // JSON array: [cmd, ...]
+    if (trimmed[0] == '[') {
+        const inner = std.mem.trim(u8, trimmed[1..], " \t");
+        if (inner.len > 0) {
+            var i: usize = 0;
+            // Skip whitespace
+            while (i < inner.len and (inner[i] == ' ' or inner[i] == '\t' or inner[i] == ',')) : (i += 1) {}
+            if (i >= inner.len) return null;
+            // Skip opening quote if present
+            if (inner[i] == '"' or inner[i] == '\'') i += 1;
+            const start = i;
+            while (i < inner.len and inner[i] != ',' and inner[i] != ']' and inner[i] != '"' and inner[i] != '\'') : (i += 1) {}
+            if (i > start) return inner[start..i];
+        }
+        return null;
+    }
+
+    // Macro: $(cmd ...)
+    if (trimmed[0] == '$' and trimmed.len > 2 and trimmed[1] == '(') {
+        const inner = trimmed[2..];
+        var i: usize = 0;
+        while (i < inner.len and (inner[i] == ' ' or inner[i] == '\t')) : (i += 1) {}
+        const start = i;
+        while (i < inner.len and inner[i] != ' ' and inner[i] != '\t' and inner[i] != ')') : (i += 1) {}
+        if (i > start) return inner[start..i];
+        return null;
+    }
+
+    // Plain string: "kubectl ..."
+    var i: usize = 0;
+    while (i < trimmed.len and trimmed[i] != ' ' and trimmed[i] != '\t') : (i += 1) {}
+    if (i > 0) return trimmed[0..i];
+    return null;
 }
 
 fn completeFlagValue(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, f: Flag, value: []const u8, environ_map: ?*const std.process.Environ.Map) ![]Candidate {
