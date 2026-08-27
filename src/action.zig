@@ -67,6 +67,19 @@ pub fn resolveMacro(allocator: std.mem.Allocator, io: std.Io, macro: []const u8,
         return try resolveChdir(allocator, io, macro, prefix, environ_map);
     }
 
+    // $split — split current value lexicographically
+    if (std.mem.eql(u8, macro, "$split") or std.mem.startsWith(u8, macro, "$split(")) {
+        return try resolveSplit(allocator, macro, prefix);
+    }
+    if (std.mem.eql(u8, macro, "$splitp") or std.mem.startsWith(u8, macro, "$splitp(")) {
+        return try resolveSplitp(allocator, macro, prefix);
+    }
+
+    // Handle bridge macros: $bridge(name, command) or $bridge.name(command)
+    if (std.mem.startsWith(u8, macro, "$bridge.") or std.mem.startsWith(u8, macro, "$bridge(")) {
+        return try resolveBridge(allocator, io, macro, prefix, environ_map);
+    }
+
     // Handle bare dollar shorthand: $(cmd) → $sh(cmd)
     if (macro.len >= 3 and macro[0] == '$' and macro[1] == '(' and macro[macro.len - 1] == ')') {
         const command = macro[2 .. macro.len - 1];
@@ -76,11 +89,18 @@ pub fn resolveMacro(allocator: std.mem.Allocator, io: std.Io, macro: []const u8,
         return &.{};
     }
 
-    // Handle exec macros: $sh(command), $bash(command), $pwsh(command)
+    // Handle exec macros: $sh(command), $bash(command), $pwsh(command), etc.
     const exec_macro = comptime [_]struct { prefix: []const u8, shell: []const u8 }{
         .{ .prefix = "$sh(", .shell = "sh" },
         .{ .prefix = "$bash(", .shell = "bash" },
         .{ .prefix = "$pwsh(", .shell = "pwsh" },
+        .{ .prefix = "$zsh(", .shell = "zsh" },
+        .{ .prefix = "$fish(", .shell = "fish" },
+        .{ .prefix = "$elvish(", .shell = "elvish" },
+        .{ .prefix = "$nu(", .shell = "nu" },
+        .{ .prefix = "$osh(", .shell = "osh" },
+        .{ .prefix = "$xonsh(", .shell = "xonsh" },
+        .{ .prefix = "$cmd(", .shell = "cmd" },
     };
     inline for (exec_macro) |em| {
         if (macro.len >= em.prefix.len + 1 and std.mem.startsWith(u8, macro, em.prefix) and macro[macro.len - 1] == ')') {
@@ -143,6 +163,10 @@ fn applyModifier(allocator: std.mem.Allocator, candidates: []traverse.Candidate,
         return try modUsage(allocator, candidates, args);
     } else if (std.mem.eql(u8, name, "uid")) {
         return try modUid(allocator, candidates, args);
+    } else if (std.mem.eql(u8, name, "split")) {
+        return try modSplit(allocator, candidates, args);
+    } else if (std.mem.eql(u8, name, "splitp")) {
+        return try modSplitp(allocator, candidates, args);
     }
     // Unknown modifier — pass through unchanged
     var result = try allocator.alloc(traverse.Candidate, candidates.len);
@@ -330,6 +354,41 @@ fn modUid(allocator: std.mem.Allocator, candidates: []traverse.Candidate, _: []c
         result[i] = c;
     }
     return result;
+}
+
+fn modSplit(allocator: std.mem.Allocator, candidates: []traverse.Candidate, args: []const u8) ![]traverse.Candidate {
+    // Split candidates by delimiter (default: whitespace), return last segment of each
+    var delim: []const u8 = " \t\n\r";
+    if (args.len > 0) delim = args;
+    var result = std.ArrayList(traverse.Candidate).empty;
+    for (candidates) |c| {
+        // Find the last delimiter in the value
+        var last_pos: i64 = -1;
+        for (delim) |d| {
+            if (std.mem.lastIndexOfScalar(u8, c.value, d)) |pos| {
+                if (@as(i64, @intCast(pos)) > last_pos) last_pos = @as(i64, @intCast(pos));
+            }
+        }
+        if (last_pos >= 0) {
+            try result.append(allocator, .{
+                .value = try allocator.dupe(u8, c.value[@as(usize, @intCast(last_pos)) + 1 ..]),
+                .description = try allocator.dupe(u8, c.description),
+                .style = try allocator.dupe(u8, c.style),
+                .nospace = c.nospace,
+                .tag = try allocator.dupe(u8, c.tag),
+            });
+        } else {
+            try result.append(allocator, c);
+        }
+    }
+    return result.toOwnedSlice(allocator);
+}
+
+fn modSplitp(allocator: std.mem.Allocator, candidates: []traverse.Candidate, args: []const u8) ![]traverse.Candidate {
+    // Same as split but with pipeline delimiter `|` by default
+    var delim: []const u8 = "|";
+    if (args.len > 0) delim = args;
+    return modSplit(allocator, candidates, delim);
 }
 
 /// Parse a simple YAML flow sequence: [val1, val2, val3]
@@ -541,13 +600,710 @@ fn resolveMultiparts(allocator: std.mem.Allocator, macro: []const u8, prefix: []
 /// Parse "$chdir(dir)" and complete in the given directory.
 /// Supports special directory macros: $userhomedir, $tempdir, etc.
 fn resolveChdir(allocator: std.mem.Allocator, io: std.Io, macro: []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
-    _ = io;
-    _ = macro;
-    _ = environ_map;
-    var candidates = std.ArrayList(traverse.Candidate).empty;
-    if (prefix.len > 0) {
-        try candidates.append(allocator, .{ .value = try allocator.dupe(u8, prefix) });
+    // Extract the directory path from $chdir(path)
+    var dir_path: []const u8 = "";
+    if (macro.len > 7 and macro[6] == '(' and macro[macro.len - 1] == ')') {
+        dir_path = macro[7 .. macro.len - 1];
     }
+    if (dir_path.len == 0) return &.{};
+
+    // Resolve special directory macros
+    const resolved = try resolveChdirPath(allocator, dir_path, environ_map, io);
+    defer allocator.free(resolved);
+
+    // If resolved exists, list files/directories in that directory
+    var dir = std.Io.Dir.cwd().openDir(io, resolved, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound, error.AccessDenied, error.NotDir => return &.{},
+        else => return err,
+    };
+    defer dir.close(io);
+
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        const name = entry.name;
+        if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
+        if (std.mem.startsWith(u8, name, prefix)) {
+            try candidates.append(allocator, .{ .value = try allocator.dupe(u8, name) });
+        }
+    }
+
+    return candidates.toOwnedSlice(allocator);
+}
+
+/// Resolve a chdir path, handling special directory macros.
+fn resolveChdirPath(allocator: std.mem.Allocator, path: []const u8, environ_map: ?*const std.process.Environ.Map, io: std.Io) ![]const u8 {
+    // Trim whitespace
+    const trimmed = std.mem.trim(u8, path, " \t");
+
+    // $userhomedir → HOME
+    if (std.mem.eql(u8, trimmed, "$userhomedir") or std.mem.eql(u8, trimmed, "$HOME")) {
+        if (environ_map) |env| {
+            if (env.get("HOME")) |home| return try allocator.dupe(u8, home);
+        }
+        return try allocator.dupe(u8, "/root");
+    }
+
+    // $tempdir → TMPDIR or /tmp
+    if (std.mem.eql(u8, trimmed, "$tempdir") or std.mem.eql(u8, trimmed, "$TMPDIR")) {
+        if (environ_map) |env| {
+            if (env.get("TMPDIR")) |td| return try allocator.dupe(u8, td);
+        }
+        return try allocator.dupe(u8, "/tmp");
+    }
+
+    // $xdgconfighome → XDG_CONFIG_HOME or ~/.config
+    if (std.mem.eql(u8, trimmed, "$xdgconfighome") or std.mem.eql(u8, trimmed, "$XDG_CONFIG_HOME")) {
+        if (environ_map) |env| {
+            if (env.get("XDG_CONFIG_HOME")) |xdg| return try allocator.dupe(u8, xdg);
+        }
+        if (environ_map) |env| {
+            if (env.get("HOME")) |home| return try std.fs.path.join(allocator, &.{ home, ".config" });
+        }
+        return try allocator.dupe(u8, "/root/.config");
+    }
+
+    // $xdgcachehome → XDG_CACHE_HOME or ~/.cache
+    if (std.mem.eql(u8, trimmed, "$xdgcachehome") or std.mem.eql(u8, trimmed, "$XDG_CACHE_HOME")) {
+        if (environ_map) |env| {
+            if (env.get("XDG_CACHE_HOME")) |xdg| return try allocator.dupe(u8, xdg);
+        }
+        if (environ_map) |env| {
+            if (env.get("HOME")) |home| return try std.fs.path.join(allocator, &.{ home, ".cache" });
+        }
+        return try allocator.dupe(u8, "/root/.cache");
+    }
+
+    // $usercachedir → same as $xdgcachehome
+    if (std.mem.eql(u8, trimmed, "$usercachedir")) {
+        return resolveChdirPath(allocator, "$xdgcachehome", environ_map, io);
+    }
+
+    // $userconfigdir → same as $xdgconfighome
+    if (std.mem.eql(u8, trimmed, "$userconfigdir")) {
+        return resolveChdirPath(allocator, "$xdgconfighome", environ_map, io);
+    }
+
+    // $nixprofile → ~/.nix-profile
+    if (std.mem.eql(u8, trimmed, "$nixprofile")) {
+        if (environ_map) |env| {
+            if (env.get("HOME")) |home| return try std.fs.path.join(allocator, &.{ home, ".nix-profile" });
+        }
+        return try allocator.dupe(u8, "/root/.nix-profile");
+    }
+
+    // $gitdir — .git folder of current directory
+    if (std.mem.eql(u8, trimmed, "$gitdir")) {
+        return try allocator.dupe(u8, ".git");
+    }
+
+    // $gitworktree — root of working directory for non-bare repos
+    if (std.mem.eql(u8, trimmed, "$gitworktree")) {
+        return try allocator.dupe(u8, ".");
+    }
+
+    // $parent([file, dir]) — walk up to first parent containing given names
+    if (std.mem.startsWith(u8, trimmed, "$parent(")) {
+        return resolveChdirParent(allocator, trimmed, io);
+    }
+
+    // Plain path — use as-is
+    return try allocator.dupe(u8, trimmed);
+}
+
+/// Resolve $parent([file, dir]) — walk up to the first parent directory containing one of the given names.
+fn resolveChdirParent(allocator: std.mem.Allocator, macro: []const u8, io: std.Io) ![]const u8 {
+    if (macro.len < 10 or macro[macro.len - 1] != ')') return try allocator.dupe(u8, ".");
+    const args = macro[8 .. macro.len - 1];
+    const names = parseFlowList(allocator, args) catch return try allocator.dupe(u8, ".");
+    defer allocator.free(names);
+
+    if (names.len == 0) return try allocator.dupe(u8, ".");
+
+    // Walk up from current directory by checking each parent
+    var dir = std.Io.Dir.cwd().openDir(io, ".", .{ .iterate = true }) catch return try allocator.dupe(u8, ".");
+    defer dir.close(io);
+
+    // Check current directory first
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        for (names) |name| {
+            if (std.mem.eql(u8, entry.name, name)) {
+                return try allocator.dupe(u8, ".");
+            }
+        }
+    }
+
+    // Walk up using ".." relative paths
+    var depth: usize = 1;
+    while (depth < 64) : (depth += 1) {
+        var up_path = std.ArrayList(u8).empty;
+        var d: usize = 0;
+        while (d < depth) : (d += 1) {
+            if (d > 0) try up_path.append(allocator, '/');
+            try up_path.appendSlice(allocator, "..");
+        }
+        const up_str = try up_path.toOwnedSlice(allocator);
+        defer allocator.free(up_str);
+
+        var parent_dir = std.Io.Dir.cwd().openDir(io, up_str, .{ .iterate = true }) catch break;
+        defer parent_dir.close(io);
+
+        var parent_it = parent_dir.iterate();
+        while (try parent_it.next(io)) |entry| {
+            for (names) |name| {
+                if (std.mem.eql(u8, entry.name, name)) {
+                    return try allocator.dupe(u8, up_str);
+                }
+            }
+        }
+    }
+
+    return try allocator.dupe(u8, ".");
+}
+
+/// Parse "$split" and split the current value lexicographically.
+/// Each segment of the current value is completed independently.
+fn resolveSplit(allocator: std.mem.Allocator, macro: []const u8, prefix: []const u8) ![]traverse.Candidate {
+    // $split optionally takes a delimiter: $split(,)
+    var delim: []const u8 = " \t\n\r";
+    if (macro.len > 7 and macro[6] == '(' and macro[macro.len - 1] == ')') {
+        const args = macro[7 .. macro.len - 1];
+        if (args.len > 0) {
+            delim = args;
+        }
+    }
+
+    // Split the prefix by the delimiter
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    var last_seg = prefix;
+    var i: usize = 0;
+    while (i < prefix.len) {
+        // Find next delimiter
+        var next_delim = prefix.len;
+        for (delim) |d| {
+            if (std.mem.indexOfScalar(u8, prefix[i..], d)) |pos| {
+                const abs_pos = i + pos;
+                if (abs_pos < next_delim) next_delim = abs_pos;
+            }
+        }
+        last_seg = prefix[i..next_delim];
+        i = next_delim + 1;
+    }
+
+    if (last_seg.len > 0) {
+        try candidates.append(allocator, .{ .value = try allocator.dupe(u8, last_seg) });
+    }
+    return candidates.toOwnedSlice(allocator);
+}
+
+/// Parse "$splitp" — same as split but with pipeline support.
+/// Pipeline delimiter is `|`.
+fn resolveSplitp(allocator: std.mem.Allocator, macro: []const u8, prefix: []const u8) ![]traverse.Candidate {
+    // $splitp can take a custom delimiter too
+    var delim: []const u8 = "|";
+    if (macro.len > 8 and macro[7] == '(' and macro[macro.len - 1] == ')') {
+        const args = macro[8 .. macro.len - 1];
+        if (args.len > 0) {
+            delim = args;
+        }
+    }
+
+    // Split by delimiter, complete last segment
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    const last_seg = if (std.mem.lastIndexOf(u8, prefix, delim)) |last| prefix[last + delim.len ..] else prefix;
+
+    if (last_seg.len > 0) {
+        try candidates.append(allocator, .{ .value = try allocator.dupe(u8, last_seg) });
+    }
+    return candidates.toOwnedSlice(allocator);
+}
+
+/// Parse "$bridge.name(command)" or "$bridge(name, command)" — delegate to framework-specific completion.
+/// Supported bridges: cobra, bash, zsh, fish, carapace, carapace-bin, argcomplete, click, powershell, yargs
+fn resolveBridge(allocator: std.mem.Allocator, io: std.Io, macro: []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    // Parse $bridge.name(command) or $bridge(name, command)
+    const paren = std.mem.indexOfScalar(u8, macro, '(') orelse return &.{};
+    if (macro[macro.len - 1] != ')') return &.{};
+
+    // Extract bridge name and command args
+    const bridge_dot = macro[0..paren];
+    const bridge_name = if (std.mem.startsWith(u8, bridge_dot, "$bridge."))
+        bridge_dot[8..]
+    else
+        bridge_dot[7..];
+
+    const args_part = macro[paren + 1 .. macro.len - 1];
+    if (args_part.len == 0) return &.{};
+
+    // Split command args by comma
+    const cmd_args = try parseFlowList(allocator, args_part);
+    defer allocator.free(cmd_args);
+
+    if (cmd_args.len == 0) return &.{};
+
+    const cmd = cmd_args[0];
+    const bridge_args = if (cmd_args.len > 1) cmd_args[1..] else &.{};
+
+    // Dispatch to the appropriate bridge handler
+    if (std.mem.eql(u8, bridge_name, "cobra")) {
+        return try bridgeCobra(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "bash")) {
+        return try bridgeBash(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "zsh")) {
+        return try bridgeZsh(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "fish")) {
+        return try bridgeFish(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "carapace") or std.mem.eql(u8, bridge_name, "carapace-bin")) {
+        return try bridgeCarapace(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "argcomplete")) {
+        return try bridgeArgcomplete(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "click")) {
+        return try bridgeClick(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "powershell")) {
+        return try bridgePowershell(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "yargs")) {
+        return try bridgeYargs(allocator, io, cmd, bridge_args, prefix, environ_map);
+    }
+
+    return &.{};
+}
+
+/// Bridge: cobra — run `cmd __complete <args>`
+fn bridgeCobra(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    // Build argv: cmd __complete <args...> <prefix>
+    var argv = std.ArrayList([]const u8).empty;
+    try argv.append(allocator, cmd);
+    try argv.append(allocator, "__complete");
+    for (args) |a| try argv.append(allocator, a);
+    if (prefix.len > 0) try argv.append(allocator, prefix);
+
+    const result = std.process.run(allocator, io, .{
+        .argv = argv.items,
+        .stdout_limit = .limited(1024 * 64),
+        .stderr_limit = .limited(1024),
+        .environ_map = environ_map,
+    }) catch |err| switch (err) {
+        error.StreamTooLong, error.FileNotFound, error.AccessDenied => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    // Cobra output: lines of "value\tdescription", last line is ":directive"
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+        if (trimmed[0] == ':') continue; // directive line
+        const parsed = traverse.splitValue(trimmed);
+        try candidates.append(allocator, .{
+            .value = try allocator.dupe(u8, parsed.value),
+            .description = try allocator.dupe(u8, parsed.description),
+            .style = try allocator.dupe(u8, parsed.style),
+        });
+    }
+
+    return candidates.toOwnedSlice(allocator);
+}
+
+/// Bridge: bash — run bash completion script with COMP_LINE
+fn bridgeBash(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    // Build the command line
+    var cmdline = std.ArrayList(u8).empty;
+    try cmdline.appendSlice(allocator, cmd);
+    for (args) |a| {
+        try cmdline.append(allocator, ' ');
+        try cmdline.appendSlice(allocator, a);
+    }
+    if (prefix.len > 0) {
+        try cmdline.append(allocator, ' ');
+        try cmdline.appendSlice(allocator, prefix);
+    }
+
+    // Run with COMP_LINE and COMP_POINT set
+    var env = std.process.Environ.Map.init(allocator);
+    if (environ_map) |em| {
+        var it = em.iterator();
+        while (it.next()) |entry| {
+            try env.put(entry.key_ptr.*, entry.value_ptr.*);
+        }
+    }
+    try env.put("COMP_LINE", cmdline.items);
+    try env.put("COMP_POINT", try std.fmt.allocPrint(allocator, "{d}", .{cmdline.items.len}));
+    try env.put("COMP_TYPE", "63");
+
+    // Build the shell script
+    const script = try std.fmt.allocPrint(allocator,
+        "complete -F _carapace_completer {s} 2>/dev/null; _carapace_completer",
+    .{cmd});
+    defer allocator.free(script);
+
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ "bash", "-c", script },
+        .stdout_limit = .limited(1024 * 64),
+        .stderr_limit = .limited(1024),
+        .environ_map = &env,
+    }) catch |err| switch (err) {
+        error.StreamTooLong, error.FileNotFound, error.AccessDenied => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    // Parse bash output: nospace\x01value\n...
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    _ = lines.next(); // skip nospace line
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+        // Parse "value (description)" format
+        if (std.mem.indexOfScalar(u8, trimmed, ' ')) |space| {
+            if (trimmed[space + 1] == '(' and trimmed[trimmed.len - 1] == ')') {
+                try candidates.append(allocator, .{
+                    .value = try allocator.dupe(u8, trimmed[0..space]),
+                    .description = try allocator.dupe(u8, trimmed[space + 2 .. trimmed.len - 1]),
+                });
+                continue;
+            }
+        }
+        try candidates.append(allocator, .{ .value = try allocator.dupe(u8, trimmed) });
+    }
+
+    return candidates.toOwnedSlice(allocator);
+}
+
+/// Bridge: zsh — run zsh completion with compdef
+fn bridgeZsh(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    // Build words array for zsh completion
+    var words = std.ArrayList(u8).empty;
+    try words.appendSlice(allocator, cmd);
+    for (args) |a| {
+        try words.append(allocator, ' ');
+        try words.appendSlice(allocator, a);
+    }
+    if (prefix.len > 0) {
+        try words.append(allocator, ' ');
+        try words.appendSlice(allocator, prefix);
+    }
+
+    // Use zsh's compdef via a script
+    const zsh_script = try std.fmt.allocPrint(allocator,
+        \\autoload -U compinit; compinit -D
+        \\_zsh_completion() {{
+        \\  local -a completions
+        \\  completions=("$@")
+        \\  _describe '' completions
+        \\}}
+        \\compdef _zsh_completion {s}
+        \\_zsh_completion "$@"
+    , .{cmd});
+    defer allocator.free(zsh_script);
+
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ "zsh", "-f", "-c", zsh_script },
+        .stdout_limit = .limited(1024 * 64),
+        .stderr_limit = .limited(1024),
+        .environ_map = environ_map,
+    }) catch |err| switch (err) {
+        error.StreamTooLong, error.FileNotFound, error.AccessDenied => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    // Parse zsh output
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+        // zsh format: value:description
+        if (std.mem.indexOfScalar(u8, trimmed, ':')) |colon| {
+            try candidates.append(allocator, .{
+                .value = try allocator.dupe(u8, trimmed[0..colon]),
+                .description = try allocator.dupe(u8, trimmed[colon + 1 ..]),
+            });
+        } else {
+            try candidates.append(allocator, .{ .value = try allocator.dupe(u8, trimmed) });
+        }
+    }
+
+    return candidates.toOwnedSlice(allocator);
+}
+
+/// Bridge: fish — run fish completion with complete --do-complete
+fn bridgeFish(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    _ = cmd;
+    _ = args;
+    _ = environ_map;
+    // Fish bridge: run the command with fish's complete --do-complete
+    const fish_script = try std.fmt.allocPrint(allocator, "complete -C '{s}'", .{prefix});
+    defer allocator.free(fish_script);
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ "fish", "-c", fish_script },
+        .stdout_limit = .limited(1024 * 64),
+        .stderr_limit = .limited(1024),
+    }) catch |err| switch (err) {
+        error.StreamTooLong, error.FileNotFound, error.AccessDenied => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+        const parsed = traverse.splitValue(trimmed);
+        try candidates.append(allocator, .{
+            .value = try allocator.dupe(u8, parsed.value),
+            .description = try allocator.dupe(u8, parsed.description),
+        });
+    }
+
+    return candidates.toOwnedSlice(allocator);
+}
+
+/// Bridge: carapace/carapace-bin — run `cmd _carapace export`
+fn bridgeCarapace(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    // Build argv: cmd _carapace export <args...> <prefix>
+    var argv = std.ArrayList([]const u8).empty;
+    try argv.append(allocator, cmd);
+    try argv.append(allocator, "_carapace");
+    try argv.append(allocator, "export");
+    for (args) |a| try argv.append(allocator, a);
+    if (prefix.len > 0) try argv.append(allocator, prefix);
+
+    const result = std.process.run(allocator, io, .{
+        .argv = argv.items,
+        .stdout_limit = .limited(1024 * 64),
+        .stderr_limit = .limited(1024),
+        .environ_map = environ_map,
+    }) catch |err| switch (err) {
+        error.StreamTooLong, error.FileNotFound, error.AccessDenied => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    // Parse JSON export format
+    // Simple parsing: extract "value" fields from JSON
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    var rest = result.stdout;
+    while (std.mem.indexOf(u8, rest, "\"value\": \"")) |start| {
+        const val_start = start + 10;
+        const val_end = std.mem.indexOfScalar(u8, rest[val_start..], '"') orelse break;
+        const value = rest[val_start .. val_start + val_end];
+
+        // Check for description
+        var desc: []const u8 = "";
+        const after_val = rest[val_start + val_end ..];
+        if (std.mem.indexOf(u8, after_val, "\"description\": \"")) |desc_start| {
+            const d_start = desc_start + 16;
+            const d_end = std.mem.indexOfScalar(u8, after_val[d_start..], '"') orelse 0;
+            if (d_end > 0) desc = after_val[d_start .. d_start + d_end];
+        }
+
+        try candidates.append(allocator, .{
+            .value = try allocator.dupe(u8, value),
+            .description = try allocator.dupe(u8, desc),
+        });
+
+        rest = rest[val_start + val_end ..];
+    }
+
+    return candidates.toOwnedSlice(allocator);
+}
+
+/// Bridge: argcomplete — run with _ARGCOMPLETE=1
+fn bridgeArgcomplete(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    // Build the command line
+    var cmdline = std.ArrayList(u8).empty;
+    try cmdline.appendSlice(allocator, cmd);
+    for (args) |a| {
+        try cmdline.append(allocator, ' ');
+        try cmdline.appendSlice(allocator, a);
+    }
+    if (prefix.len > 0) {
+        try cmdline.append(allocator, ' ');
+        try cmdline.appendSlice(allocator, prefix);
+    }
+
+    // Set argcomplete env vars
+    var env = std.process.Environ.Map.init(allocator);
+    if (environ_map) |em| {
+        var it = em.iterator();
+        while (it.next()) |entry| {
+            try env.put(entry.key_ptr.*, entry.value_ptr.*);
+        }
+    }
+    try env.put("_ARGCOMPLETE", "1");
+    try env.put("_ARGCOMPLETE_DFS", "\\t");
+    try env.put("_ARGCOMPLETE_IFS", "\\n");
+    try env.put("_ARGCOMPLETE_SHELL", "fish");
+    try env.put("COMP_LINE", cmdline.items);
+    try env.put("COMP_POINT", try std.fmt.allocPrint(allocator, "{d}", .{cmdline.items.len}));
+
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ cmd },
+        .stdout_limit = .limited(1024 * 64),
+        .stderr_limit = .limited(1024),
+        .environ_map = &env,
+    }) catch |err| switch (err) {
+        error.StreamTooLong, error.FileNotFound, error.AccessDenied => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+        const parsed = traverse.splitValue(trimmed);
+        try candidates.append(allocator, .{
+            .value = try allocator.dupe(u8, parsed.value),
+            .description = try allocator.dupe(u8, parsed.description),
+        });
+    }
+
+    return candidates.toOwnedSlice(allocator);
+}
+
+/// Bridge: click — run with _<CMD>_COMPLETE=zsh_complete
+fn bridgeClick(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    // Build the command line
+    var cmdline = std.ArrayList(u8).empty;
+    try cmdline.appendSlice(allocator, cmd);
+    for (args) |a| {
+        try cmdline.append(allocator, ' ');
+        try cmdline.appendSlice(allocator, a);
+    }
+    if (prefix.len > 0) {
+        try cmdline.append(allocator, ' ');
+        try cmdline.appendSlice(allocator, prefix);
+    }
+
+    // Set click env vars
+    var env = std.process.Environ.Map.init(allocator);
+    if (environ_map) |em| {
+        var it = em.iterator();
+        while (it.next()) |entry| {
+            try env.put(entry.key_ptr.*, entry.value_ptr.*);
+        }
+    }
+    try env.put("COMP_WORDS", cmdline.items);
+    // COMP_CWORD: count of words
+    var word_count: usize = 1;
+    for (cmdline.items) |c| {
+        if (c == ' ') word_count += 1;
+    }
+    try env.put("COMP_CWORD", try std.fmt.allocPrint(allocator, "{d}", .{word_count}));
+
+    // Build the env var name: _<CMD>_COMPLETE (uppercased)
+    var upper_name_buf: [256]u8 = undefined;
+    var upper_len: usize = 0;
+    for (cmd) |c| {
+        upper_name_buf[upper_len] = std.ascii.toUpper(c);
+        upper_len += 1;
+    }
+    const env_var_name = try std.fmt.allocPrint(allocator, "_{s}_COMPLETE", .{upper_name_buf[0..upper_len]});
+    defer allocator.free(env_var_name);
+    try env.put(env_var_name, "zsh_complete");
+
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ cmd },
+        .stdout_limit = .limited(1024 * 64),
+        .stderr_limit = .limited(1024),
+        .environ_map = &env,
+    }) catch |err| switch (err) {
+        error.StreamTooLong, error.FileNotFound, error.AccessDenied => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    // Click output: groups of 3 lines: type, value, desc
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |_| {
+        const value_line = if (lines.next()) |l| std.mem.trim(u8, l, " \t\r") else break;
+        const desc_line = if (lines.next()) |l| std.mem.trim(u8, l, " \t\r") else "";
+        if (value_line.len > 0) {
+            try candidates.append(allocator, .{
+                .value = try allocator.dupe(u8, value_line),
+                .description = try allocator.dupe(u8, desc_line),
+            });
+        }
+    }
+
+    return candidates.toOwnedSlice(allocator);
+}
+
+/// Bridge: powershell — run pwsh with CommandCompletion
+fn bridgePowershell(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    _ = allocator;
+    _ = io;
+    _ = cmd;
+    _ = args;
+    _ = prefix;
+    _ = environ_map;
+    // Powershell bridge: use pwsh -Command with CommandCompletion::CompleteInput
+    // Simplified: just return empty for now
+    return &.{};
+}
+
+/// Bridge: yargs — run with --get-yargs-completions
+fn bridgeYargs(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    // Build argv: cmd --get-yargs-completions <args...> <prefix>
+    var argv = std.ArrayList([]const u8).empty;
+    try argv.append(allocator, cmd);
+    try argv.append(allocator, "--get-yargs-completions");
+    for (args) |a| try argv.append(allocator, a);
+    if (prefix.len > 0) try argv.append(allocator, prefix);
+
+    var env = std.process.Environ.Map.init(allocator);
+    if (environ_map) |em| {
+        var it = em.iterator();
+        while (it.next()) |entry| {
+            try env.put(entry.key_ptr.*, entry.value_ptr.*);
+        }
+    }
+    try env.put("SHELL", "zsh");
+
+    const result = std.process.run(allocator, io, .{
+        .argv = argv.items,
+        .stdout_limit = .limited(1024 * 64),
+        .stderr_limit = .limited(1024),
+        .environ_map = &env,
+    }) catch |err| switch (err) {
+        error.StreamTooLong, error.FileNotFound, error.AccessDenied => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+        // yargs format: name:description
+        if (std.mem.indexOfScalar(u8, trimmed, ':')) |colon| {
+            try candidates.append(allocator, .{
+                .value = try allocator.dupe(u8, trimmed[0..colon]),
+                .description = try allocator.dupe(u8, trimmed[colon + 1 ..]),
+            });
+        } else {
+            try candidates.append(allocator, .{ .value = try allocator.dupe(u8, trimmed) });
+        }
+    }
+
     return candidates.toOwnedSlice(allocator);
 }
 
@@ -802,6 +1558,29 @@ test "bare dollar shorthand $(cmd) matches $sh(cmd)" {
     try std.testing.expectEqual(@as(usize, 2), candidates.len);
     try std.testing.expectEqualStrings("one", candidates[0].value);
     try std.testing.expectEqualStrings("two", candidates[1].value);
+}
+
+test "split modifier returns last segment" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const candidates = try resolveMacro(arena.allocator(), std.testing.io, "a/b/c ||| $split(/)" , "", null);
+    try std.testing.expectEqual(@as(usize, 1), candidates.len);
+    try std.testing.expectEqualStrings("c", candidates[0].value);
+}
+
+test "splitp modifier returns last pipeline segment" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const candidates = try resolveMacro(arena.allocator(), std.testing.io, "a|b|c ||| $splitp" , "", null);
+    try std.testing.expectEqual(@as(usize, 1), candidates.len);
+    try std.testing.expectEqualStrings("c", candidates[0].value);
+}
+
+test "chdir macro resolves userhomedir" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    _ = try resolveMacro(arena.allocator(), std.testing.io, "$chdir($userhomedir)", "", null);
+    // Just verify it doesn't crash — returns candidates from the home directory
 }
 
 test "message macro returns empty value with description" {
