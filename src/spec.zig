@@ -13,6 +13,7 @@ pub const Command = struct {
     commands: []Command = &.{},
     completion: Completion = .{},
     run: []const u8 = "",
+    parent: ?*const Command = null,
 
     pub const Parsing = enum { interspersed, non_interspersed, disabled };
 
@@ -46,12 +47,19 @@ pub const Command = struct {
         for (self.persistent_flags) |f| {
             if (f.matches(name)) return f;
         }
+        // Walk up parent chain for inherited persistent flags
+        if (self.parent) |p| {
+            return p.findFlag(name);
+        }
         return null;
     }
 
     pub fn findFlagCompletion(self: Command, name: []const u8) ?[]const []const u8 {
         for (self.completion.flag) |fc| {
             if (std.mem.eql(u8, fc.name, name)) return fc.values;
+        }
+        if (self.parent) |p| {
+            return p.findFlagCompletion(name);
         }
         return null;
     }
@@ -148,50 +156,56 @@ pub fn loadSpec(allocator: std.mem.Allocator, src: []const u8) !Command {
 }
 
 fn decodeCommand(allocator: std.mem.Allocator, val: yaml.Value) !Command {
-    var cmd = Command{};
+    return decodeCommandWithParent(allocator, val, null);
+}
 
-    if (val.getScalar("name")) |name| cmd.name = name;
-    if (val.getScalar("description")) |desc| cmd.description = desc;
+fn decodeCommandWithParent(allocator: std.mem.Allocator, val: yaml.Value, parent: ?*const Command) !Command {
+    // Allocate in arena so children can have stable parent pointers
+    const cmd_ptr = try allocator.create(Command);
+    cmd_ptr.* = Command{ .parent = parent };
+
+    if (val.getScalar("name")) |name| cmd_ptr.name = name;
+    if (val.getScalar("description")) |desc| cmd_ptr.description = desc;
     if (val.getScalar("hidden")) |hidden| {
-        cmd.hidden = std.mem.eql(u8, hidden, "true");
+        cmd_ptr.hidden = std.mem.eql(u8, hidden, "true");
     }
     if (val.getScalar("parsing")) |parsing| {
         if (std.mem.eql(u8, parsing, "disabled")) {
-            cmd.parsing = .disabled;
+            cmd_ptr.parsing = .disabled;
         } else if (std.mem.eql(u8, parsing, "non-interspersed")) {
-            cmd.parsing = .non_interspersed;
+            cmd_ptr.parsing = .non_interspersed;
         }
     }
-    if (val.getScalar("run")) |run| cmd.run = run;
+    if (val.getScalar("run")) |run| cmd_ptr.run = run;
 
     if (val.getList("aliases")) |aliases| {
         var arr = try allocator.alloc([]const u8, aliases.len);
         for (aliases, 0..) |a, i| {
             arr[i] = a.scalar;
         }
-        cmd.aliases = arr;
+        cmd_ptr.aliases = arr;
     }
 
     if (val.getMap("flags")) |flags| {
-        cmd.flags = try decodeFlags(allocator, flags);
+        cmd_ptr.flags = try decodeFlags(allocator, flags);
     }
     if (val.getMap("persistentflags")) |flags| {
-        cmd.persistent_flags = try decodeFlags(allocator, flags);
+        cmd_ptr.persistent_flags = try decodeFlags(allocator, flags);
     }
 
     if (val.getList("commands")) |cmds| {
         var arr = try allocator.alloc(Command, cmds.len);
         for (cmds, 0..) |c, i| {
-            arr[i] = try decodeCommand(allocator, c);
+            arr[i] = try decodeCommandWithParent(allocator, c, cmd_ptr);
         }
-        cmd.commands = arr;
+        cmd_ptr.commands = arr;
     }
 
     if (val.get("completion")) |comp_val| {
-        cmd.completion = try decodeCompletion(allocator, comp_val);
+        cmd_ptr.completion = try decodeCompletion(allocator, comp_val);
     }
 
-    return cmd;
+    return cmd_ptr.*;
 }
 
 fn decodeFlags(allocator: std.mem.Allocator, flags: []yaml.Value.KV) ![]Flag {

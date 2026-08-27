@@ -233,11 +233,19 @@ fn resolveValues(allocator: std.mem.Allocator, io: std.Io, values: []const []con
 }
 
 fn hasNonPosixFlags(cmd: spec.Command) bool {
-    for (cmd.flags) |f| {
-        if (f.isNonPosix()) return true;
-    }
-    for (cmd.persistent_flags) |f| {
-        if (f.isNonPosix()) return true;
+    var current = cmd;
+    while (true) {
+        for (current.flags) |f| {
+            if (f.isNonPosix()) return true;
+        }
+        for (current.persistent_flags) |f| {
+            if (f.isNonPosix()) return true;
+        }
+        if (current.parent) |p| {
+            current = p.*;
+        } else {
+            break;
+        }
     }
     return false;
 }
@@ -245,14 +253,21 @@ fn hasNonPosixFlags(cmd: spec.Command) bool {
 fn completeFlags(allocator: std.mem.Allocator, cmd: spec.Command, prefix: []const u8) ![]Candidate {
     var candidates = std.ArrayList(Candidate).empty;
 
-    for (cmd.flags) |f| {
-        if (f.hidden) continue;
-        try addFlagCandidate(allocator, &candidates, f, prefix);
-    }
-
-    for (cmd.persistent_flags) |f| {
-        if (f.hidden) continue;
-        try addFlagCandidate(allocator, &candidates, f, prefix);
+    var current = cmd;
+    while (true) {
+        for (current.flags) |f| {
+            if (f.hidden) continue;
+            try addFlagCandidate(allocator, &candidates, f, prefix);
+        }
+        for (current.persistent_flags) |f| {
+            if (f.hidden) continue;
+            try addFlagCandidate(allocator, &candidates, f, prefix);
+        }
+        if (current.parent) |p| {
+            current = p.*;
+        } else {
+            break;
+        }
     }
 
     return candidates.toOwnedSlice(allocator);
@@ -317,32 +332,41 @@ fn completeShorthandSeries(allocator: std.mem.Allocator, io: std.Io, cmd: spec.C
     // Offer remaining valid shorthand flags as chaining candidates.
     // Candidate value is the full typed prefix + new shorthand char.
     var candidates = std.ArrayList(Candidate).empty;
-    for (cmd.flags) |f| {
-        if (f.hidden or f.shorthand.len == 0) continue;
-        // Skip shorthands already used in the series
-        var already_used = false;
-        for (shorthand_part) |c| {
-            if (f.shorthand.len > 0 and f.shorthand[0] == c) {
-                already_used = true;
-                break;
+
+    var current = cmd;
+    while (true) {
+        for (current.flags) |f| {
+            if (f.hidden or f.shorthand.len == 0) continue;
+            // Skip shorthands already used in the series
+            var already_used = false;
+            for (shorthand_part) |c| {
+                if (f.shorthand.len > 0 and f.shorthand[0] == c) {
+                    already_used = true;
+                    break;
+                }
             }
+            if (already_used) continue;
+            const form = try std.fmt.allocPrint(allocator, "-{s}{s}", .{ shorthand_part, f.shorthand });
+            try candidates.append(allocator, .{ .value = form, .description = f.description });
         }
-        if (already_used) continue;
-        const form = try std.fmt.allocPrint(allocator, "-{s}{s}", .{ shorthand_part, f.shorthand });
-        try candidates.append(allocator, .{ .value = form, .description = f.description });
-    }
-    for (cmd.persistent_flags) |f| {
-        if (f.hidden or f.shorthand.len == 0) continue;
-        var already_used = false;
-        for (shorthand_part) |c| {
-            if (f.shorthand.len > 0 and f.shorthand[0] == c) {
-                already_used = true;
-                break;
+        for (current.persistent_flags) |f| {
+            if (f.hidden or f.shorthand.len == 0) continue;
+            var already_used = false;
+            for (shorthand_part) |c| {
+                if (f.shorthand.len > 0 and f.shorthand[0] == c) {
+                    already_used = true;
+                    break;
+                }
             }
+            if (already_used) continue;
+            const form = try std.fmt.allocPrint(allocator, "-{s}{s}", .{ shorthand_part, f.shorthand });
+            try candidates.append(allocator, .{ .value = form, .description = f.description });
         }
-        if (already_used) continue;
-        const form = try std.fmt.allocPrint(allocator, "-{s}{s}", .{ shorthand_part, f.shorthand });
-        try candidates.append(allocator, .{ .value = form, .description = f.description });
+        if (current.parent) |p| {
+            current = p.*;
+        } else {
+            break;
+        }
     }
     return candidates.toOwnedSlice(allocator);
 }
@@ -658,9 +682,7 @@ test "complete flag value in subcommand" {
     try std.testing.expectEqualStrings("aarch64-linux", result[1].value);
 }
 
-test "complete flags in subcommand does not inherit parent persistent flags" {
-    // Known limitation: persistent flags are NOT inherited from ancestor commands.
-    // Only persistent_flags defined on the current command are visible via findFlag().
+test "complete flags in subcommand inherits parent persistent flags" {
     const yaml_src =
         \\name: mycmd
         \\persistentflags:
@@ -674,8 +696,9 @@ test "complete flags in subcommand does not inherit parent persistent flags" {
     defer arena.deinit();
     const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
     const result = try complete(arena.allocator(), std.testing.io, cmd, &.{ "mycmd", "build", "--" });
-    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqual(@as(usize, 2), result.len);
     try std.testing.expectEqualStrings("--target", result[0].value);
+    try std.testing.expectEqualStrings("--verbose", result[1].value);
 }
 
 test "complete flags after consuming persistent flag value" {
@@ -692,8 +715,9 @@ test "complete flags after consuming persistent flag value" {
     defer arena.deinit();
     const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
     const result = try complete(arena.allocator(), std.testing.io, cmd, &.{ "mycmd", "--config", "/etc/app.conf", "build", "--" });
-    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqual(@as(usize, 2), result.len);
     try std.testing.expectEqualStrings("--target", result[0].value);
+    try std.testing.expectEqualStrings("--config", result[1].value);
 }
 
 test "complete positional after flag" {
