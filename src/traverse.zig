@@ -66,13 +66,11 @@ pub fn expandVariables(allocator: std.mem.Allocator, template: []const u8, flag_
             } else if (std.mem.startsWith(u8, var_name, "C_FLAG_")) {
                 const flag_name = var_name[7..];
                 // Convert to lowercase for lookup (flag names are lowercase)
-                var lower_buf: [128]u8 = undefined;
-                var lower_len: usize = 0;
-                for (flag_name) |c| {
-                    lower_buf[lower_len] = std.ascii.toLower(c);
-                    lower_len += 1;
+                const lower_key = try allocator.alloc(u8, flag_name.len);
+                for (flag_name, 0..) |c, j| {
+                    lower_key[j] = std.ascii.toLower(c);
                 }
-                const lower_key = lower_buf[0..lower_len];
+                defer allocator.free(lower_key);
                 if (flag_values.get(lower_key)) |val| {
                     try result.appendSlice(allocator, val);
                 } else {
