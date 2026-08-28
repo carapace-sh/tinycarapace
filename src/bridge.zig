@@ -178,16 +178,151 @@ fn bridgeBash(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: [
     return candidates.toOwnedSlice(allocator);
 }
 
-/// Bridge: zsh — run zsh with compdef
+/// Bridge: zsh — run zsh with compdef via capture script
 fn bridgeZsh(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
-    _ = allocator; _ = io; _ = cmd; _ = args; _ = prefix; _ = environ_map;
-    return &.{}; // TODO: implement zsh bridge
+    var cmdline = std.ArrayList(u8).empty;
+    try cmdline.appendSlice(allocator, cmd);
+    for (args) |a| { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, a); }
+    if (prefix.len > 0) { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, prefix); }
+
+    var env = std.process.Environ.Map.init(allocator);
+    if (environ_map) |em| { var it = em.iterator(); while (it.next()) |entry| { try env.put(entry.key_ptr.*, entry.value_ptr.*); } }
+    const home_zsh = if (environ_map) |em| em.get("HOME") orelse "/tmp" else "/tmp";
+    try env.put("CARAPACE_BRIDGE_CONFIG_HOME", home_zsh);
+
+    // Build zsh args: --no-rcs -c <capture script> -- <cmd> <args...>
+    const capture_script =
+        "zmodload zsh/zpty 2>/dev/null || exit 1\n" ++
+        "zpty z zsh -f -i\n" ++
+        "local line\n" ++
+        "setopt rcquotes\n" ++
+        "() {\n" ++
+        "  zpty -w z source $1\n" ++
+        "  repeat 4; do\n" ++
+        "    zpty -r z line\n" ++
+        "    [[ $line == ok* ]] && return\n" ++
+        "  done\n" ++
+        "  exit 2\n" ++
+        "} =( <<< '\n" ++
+        "PROMPT=\n" ++
+        "oldfpath=\"$fpath\"\n" ++
+        "autoload -U compinit && compinit -d \"${CARAPACE_BRIDGE_CONFIG_HOME:-$HOME/.config}/carapace/bridge/zsh/.zcompdump_capture\"\n" ++
+        "[ -f \"${CARAPACE_BRIDGE_CONFIG_HOME:-$HOME/.config}/carapace/bridge/zsh/.zshrc\" ] && source \"${CARAPACE_BRIDGE_CONFIG_HOME:-$HOME/.config}/carapace/bridge/zsh/.zshrc\"\n" ++
+        "[[ \"$oldfpath\" != \"$fpath\" ]] && compinit\n" ++
+        "bindkey ''^M'' undefined\n" ++
+        "bindkey ''^J'' undefined\n" ++
+        "bindkey ''^I'' complete-word\n" ++
+        "null-line () { echo -E - $''\\0'' }\n" ++
+        "compprefuncs=( null-line )\n" ++
+        "comppostfuncs=( null-line exit )\n" ++
+        "zstyle '':completion:*'' list-grouped false\n" ++
+        "zstyle '':completion:*'' insert-tab false\n" ++
+        "zstyle '':completion:*'' list-separator ''''\n" ++
+        "zmodload zsh/zutil\n" ++
+        "compadd () {\n" ++
+        "  if [[ ${@[1,(i)(-|--)]} == *-(O|A|D)\\ * ]]; then builtin compadd \"$@\"; return $?; fi\n" ++
+        "  typeset -a __hits __dscr __tmp\n" ++
+        "  if (( $@[(I)-d] )); then\n" ++
+        "    __tmp=${@[$[${@[(i)-d]}+1]]}\n" ++
+        "    if [[ $__tmp == \\(* ]]; then eval \"__dscr=$__tmp\"; else __dscr=( \"${(@P)__tmp}\" ); fi\n" ++
+        "  fi\n" ++
+        "  builtin compadd -A __hits -D __dscr \"$@\"\n" ++
+        "  setopt localoptions norcexpandparam extendedglob\n" ++
+        "  typeset -A apre hpre hsuf asuf\n" ++
+        "  zparseopts -E P:=apre p:=hpre S:=asuf s:=hsuf\n" ++
+        "  integer dirsuf=0\n" ++
+        "  if [[ -z $hsuf && \"${${@//-default-/}% -# *}\" == *-[[:alnum:]]#f* ]]; then dirsuf=1; fi\n" ++
+        "  [[ -n $__hits ]] || return\n" ++
+        "  local dsuf dscr\n" ++
+        "  for i in {1..$#__hits}; do\n" ++
+        "    (( dirsuf )) && [[ -d $__hits[$i] ]] && dsuf=/ || dsuf=\n" ++
+        "    (( $#__dscr >= $i )) && dscr=\" -- ${${__dscr[$i]}##$__hits[$i] #}\" || dscr=\n" ++
+        "    echo -E - $IPREFIX$apre$hpre$__hits[$i]$dsuf$hsuf$asuf$dscr\n" ++
+        "  done\n" ++
+        "}\n" ++
+        "echo ok')\n" ++
+        "zpty -w z \"$*\"$'\\t'\n" ++
+        "integer tog=0\n" ++
+        "while zpty -r z; do :; done | while IFS= read -r line; do\n" ++
+        "  if [[ $line == *$'\\0\\r' ]]; then (( tog++ )) && return 0 || continue; fi\n" ++
+        "  (( tog )) && echo -E - $line\n" ++
+        "done\n" ++
+        "return 0";
+
+    var zsh_argv = std.ArrayList([]const u8).empty;
+    try zsh_argv.append(allocator, "zsh");
+    try zsh_argv.append(allocator, "--no-rcs");
+    try zsh_argv.append(allocator, "-c");
+    try zsh_argv.append(allocator, capture_script);
+    try zsh_argv.append(allocator, "--");
+    try zsh_argv.append(allocator, cmdline.items);
+
+    const result = std.process.run(allocator, io, .{
+        .argv = zsh_argv.items, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024), .environ_map = &env,
+    }) catch |err| switch (err) {
+        error.StreamTooLong, error.FileNotFound, error.AccessDenied => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout); defer allocator.free(result.stderr);
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    // Build unquote mappings
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+        if (trimmed[0] == 0) continue;
+        // Split on " -- " for description
+        if (std.mem.indexOf(u8, trimmed, " -- ")) |sep| {
+            const value = trimmed[0..sep];
+            const desc = trimmed[sep + 4 ..];
+            try candidates.append(allocator, .{ .value = try allocator.dupe(u8, value), .description = try allocator.dupe(u8, desc) });
+        } else {
+            try candidates.append(allocator, .{ .value = try allocator.dupe(u8, trimmed) });
+        }
+    }
+    return candidates.toOwnedSlice(allocator);
 }
 
 /// Bridge: fish — run fish with complete --do-complete
 fn bridgeFish(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
-    _ = allocator; _ = io; _ = cmd; _ = args; _ = prefix; _ = environ_map;
-    return &.{}; // TODO: implement fish bridge
+    var cmdline = std.ArrayList(u8).empty;
+    try cmdline.appendSlice(allocator, cmd);
+    for (args) |a| { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, a); }
+    if (prefix.len > 0) { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, prefix); }
+
+    var env = std.process.Environ.Map.init(allocator);
+    if (environ_map) |em| { var it = em.iterator(); while (it.next()) |entry| { try env.put(entry.key_ptr.*, entry.value_ptr.*); } }
+    const home_fish = if (environ_map) |em| em.get("HOME") orelse "/tmp" else "/tmp";
+    try env.put("CARAPACE_BRIDGE_CONFIG_HOME", home_fish);
+
+    const config_dir = try std.fmt.allocPrint(allocator, "{s}/.config/carapace/bridge/fish", .{home_fish});
+    defer allocator.free(config_dir);
+
+    const snippet = try std.fmt.allocPrint(allocator,
+        "set __fish_config_dir {s};source \"$__fish_data_dir/config.fish\";source \"{s}/config.fish\";complete --do-complete=\"{s}\"",
+        .{ config_dir, config_dir, cmdline.items });
+    defer allocator.free(snippet);
+
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ "fish", "--no-config", "--command", snippet },
+        .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024), .environ_map = &env,
+    }) catch |err| switch (err) {
+        error.StreamTooLong, error.FileNotFound, error.AccessDenied => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout); defer allocator.free(result.stderr);
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+        if (std.mem.indexOfScalar(u8, trimmed, '\t')) |tab| {
+            try candidates.append(allocator, .{ .value = try allocator.dupe(u8, trimmed[0..tab]), .description = try allocator.dupe(u8, trimmed[tab + 1 ..]) });
+        } else {
+            try candidates.append(allocator, .{ .value = try allocator.dupe(u8, trimmed) });
+        }
+    }
+    return candidates.toOwnedSlice(allocator);
 }
 
 /// Bridge: carapace — run `cmd _carapace export ""`
@@ -205,6 +340,7 @@ fn bridgeCarapace(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, arg
         else => return err,
     };
     defer allocator.free(result.stdout); defer allocator.free(result.stderr);
+    if (result.stdout.len == 0) return &.{};
     return parseExportJson(allocator, result.stdout);
 }
 
@@ -223,10 +359,11 @@ fn bridgeCarapaceBin(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, 
         else => return err,
     };
     defer allocator.free(result.stdout); defer allocator.free(result.stderr);
+    if (result.stdout.len == 0) return &.{};
     return parseExportJson(allocator, result.stdout);
 }
 
-/// Bridge: argcomplete — run with _ARGCOMPLETE=1
+/// Bridge: argcomplete — run with _ARGCOMPLETE=1 (v3)
 fn bridgeArgcomplete(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
     var cmdline = std.ArrayList(u8).empty;
     try cmdline.appendSlice(allocator, cmd);
@@ -237,6 +374,7 @@ fn bridgeArgcomplete(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, 
     try env.put("_ARGCOMPLETE", "1"); try env.put("_ARGCOMPLETE_DFS", "\\t"); try env.put("_ARGCOMPLETE_IFS", "\\n");
     try env.put("_ARGCOMPLETE_SHELL", "fish"); try env.put("COMP_LINE", cmdline.items);
     try env.put("COMP_POINT", try std.fmt.allocPrint(allocator, "{d}", .{cmdline.items.len}));
+    try env.put("_ARGCOMPLETE_SUPPRESS_SPACE", "1");
     const result = std.process.run(allocator, io, .{
         .argv = &.{ cmd }, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024), .environ_map = &env,
     }) catch |err| switch (err) {
@@ -248,7 +386,110 @@ fn bridgeArgcomplete(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, 
     var lines = std.mem.splitScalar(u8, result.stdout, '\n');
     while (lines.next()) |line| {
         const trimmed = std.mem.trim(u8, line, " \t\r");
-        if (trimmed.len > 0) { const parsed = traverse.splitValue(trimmed); try candidates.append(allocator, .{ .value = try allocator.dupe(u8, parsed.value), .description = try allocator.dupe(u8, parsed.description) }); }
+        if (trimmed.len > 0) {
+            if (std.mem.indexOfScalar(u8, trimmed, '\t')) |tab| {
+                try candidates.append(allocator, .{ .value = try allocator.dupe(u8, trimmed[0..tab]), .description = try allocator.dupe(u8, trimmed[tab + 1 ..]) });
+            } else {
+                try candidates.append(allocator, .{ .value = try allocator.dupe(u8, trimmed) });
+            }
+        }
+    }
+    return candidates.toOwnedSlice(allocator);
+}
+
+/// Bridge: argcomplete v1 — deprecated, uses fd 8/9
+fn bridgeArgcompleteV1(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    var cmdline = std.ArrayList(u8).empty;
+    try cmdline.appendSlice(allocator, cmd);
+    for (args) |a| { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, a); }
+    if (prefix.len > 0) { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, prefix); }
+    var env = std.process.Environ.Map.init(allocator);
+    if (environ_map) |em| { var it = em.iterator(); while (it.next()) |entry| { try env.put(entry.key_ptr.*, entry.value_ptr.*); } }
+    try env.put("_ARGCOMPLETE", "1"); try env.put("_ARGCOMPLETE_DFS", "\\t"); try env.put("_ARGCOMPLETE_IFS", "\\n");
+    try env.put("_ARGCOMPLETE_SHELL", "fish"); try env.put("COMP_LINE", cmdline.items);
+    try env.put("COMP_POINT", try std.fmt.allocPrint(allocator, "{d}", .{cmdline.items.len}));
+    try env.put("_ARGCOMPLETE_SUPPRESS_SPACE", "1");
+    const shell_cmd = try std.fmt.allocPrint(allocator, "{s} 8>&1 9>&2 1>/dev/null 2>/dev/null", .{cmd});
+    defer allocator.free(shell_cmd);
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ "sh", "-c", shell_cmd }, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024), .environ_map = &env,
+    }) catch |err| switch (err) {
+        error.StreamTooLong, error.FileNotFound, error.AccessDenied => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout); defer allocator.free(result.stderr);
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len > 0) {
+            if (std.mem.indexOfScalar(u8, trimmed, '\t')) |tab| {
+                try candidates.append(allocator, .{ .value = try allocator.dupe(u8, trimmed[0..tab]), .description = try allocator.dupe(u8, trimmed[tab + 1 ..]) });
+            } else {
+                try candidates.append(allocator, .{ .value = try allocator.dupe(u8, trimmed) });
+            }
+        }
+    }
+    return candidates.toOwnedSlice(allocator);
+}
+
+/// Bridge: aws — run aws_completer with COMP_LINE
+fn bridgeAws(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    var cmdline = std.ArrayList(u8).empty;
+    try cmdline.appendSlice(allocator, cmd);
+    for (args) |a| { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, a); }
+    if (prefix.len > 0) { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, prefix); }
+    var env = std.process.Environ.Map.init(allocator);
+    if (environ_map) |em| { var it = em.iterator(); while (it.next()) |entry| { try env.put(entry.key_ptr.*, entry.value_ptr.*); } }
+    try env.put("COMP_LINE", cmdline.items);
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ "aws_completer" }, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024), .environ_map = &env,
+    }) catch |err| switch (err) {
+        error.StreamTooLong, error.FileNotFound, error.AccessDenied => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout); defer allocator.free(result.stderr);
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len > 0) {
+            // Strip trailing space from aws v1
+            const stripped = if (std.mem.endsWith(u8, trimmed, " ")) trimmed[0 .. trimmed.len - 1] else trimmed;
+            try candidates.append(allocator, .{ .value = try allocator.dupe(u8, stripped) });
+        }
+    }
+    return candidates.toOwnedSlice(allocator);
+}
+
+/// Bridge: clap — run `cmd complete --index ...`
+fn bridgeClap(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    const index = 1 + args.len + if (prefix.len > 0) @as(usize, 1) else 0;
+    var argv = std.ArrayList([]const u8).empty;
+    try argv.append(allocator, cmd);
+    try argv.append(allocator, "complete");
+    try argv.append(allocator, "--index");
+    try argv.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{index}));
+    try argv.append(allocator, "--type");
+    try argv.append(allocator, "9");
+    try argv.append(allocator, "--no-space");
+    try argv.append(allocator, "--ifs=\n");
+    try argv.append(allocator, "--");
+    for (args) |a| try argv.append(allocator, a);
+    if (prefix.len > 0) try argv.append(allocator, prefix);
+    const result = std.process.run(allocator, io, .{
+        .argv = argv.items, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024),
+        .environ_map = environ_map,
+    }) catch |err| switch (err) {
+        error.StreamTooLong, error.FileNotFound, error.AccessDenied => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout); defer allocator.free(result.stderr);
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len > 0) try candidates.append(allocator, .{ .value = try allocator.dupe(u8, trimmed) });
     }
     return candidates.toOwnedSlice(allocator);
 }
@@ -288,52 +529,140 @@ fn bridgeClick(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: 
     return candidates.toOwnedSlice(allocator);
 }
 
-/// Bridge: argcomplete v1 — deprecated, uses fd 8/9
-fn bridgeArgcompleteV1(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
-    _ = allocator; _ = io; _ = cmd; _ = args; _ = prefix; _ = environ_map;
-    return &.{};
-}
-
-/// Bridge: aws — run aws_completer
-fn bridgeAws(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
-    _ = allocator; _ = io; _ = cmd; _ = args; _ = prefix; _ = environ_map;
-    return &.{};
-}
-
-/// Bridge: clap — run `cmd complete --index ...`
-fn bridgeClap(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
-    _ = allocator; _ = io; _ = cmd; _ = args; _ = prefix; _ = environ_map;
-    return &.{};
-}
-
 /// Bridge: complete — run with COMP_LINE
 fn bridgeComplete(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
-    _ = allocator; _ = io; _ = cmd; _ = args; _ = prefix; _ = environ_map;
-    return &.{};
+    var cmdline = std.ArrayList(u8).empty;
+    try cmdline.appendSlice(allocator, cmd);
+    for (args) |a| { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, a); }
+    if (prefix.len > 0) { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, prefix); }
+    var env = std.process.Environ.Map.init(allocator);
+    if (environ_map) |em| { var it = em.iterator(); while (it.next()) |entry| { try env.put(entry.key_ptr.*, entry.value_ptr.*); } }
+    try env.put("COMP_LINE", cmdline.items);
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ cmd }, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024), .environ_map = &env,
+    }) catch |err| switch (err) {
+        error.StreamTooLong, error.FileNotFound, error.AccessDenied => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout); defer allocator.free(result.stderr);
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len > 0) try candidates.append(allocator, .{ .value = try allocator.dupe(u8, trimmed) });
+    }
+    return candidates.toOwnedSlice(allocator);
 }
 
-/// Bridge: gcloud — run with argcomplete
+/// Bridge: gcloud — run with argcomplete (delegates to argcomplete v1)
 fn bridgeGcloud(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
-    _ = allocator; _ = io; _ = cmd; _ = args; _ = prefix; _ = environ_map;
-    return &.{};
+    var env = std.process.Environ.Map.init(allocator);
+    if (environ_map) |em| { var it = em.iterator(); while (it.next()) |entry| { try env.put(entry.key_ptr.*, entry.value_ptr.*); } }
+    try env.put("CLOUDSDK_COMPONENT_MANAGER_DISABLE_UPDATE_CHECK", "1");
+    return bridgeArgcompleteV1(allocator, io, cmd, args, prefix, &env);
 }
 
 /// Bridge: inshellisense — run `inshellisense complete <input>`
 fn bridgeInshellisense(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
-    _ = allocator; _ = io; _ = cmd; _ = args; _ = prefix; _ = environ_map;
-    return &.{};
+    var cmdline = std.ArrayList(u8).empty;
+    try cmdline.appendSlice(allocator, cmd);
+    for (args) |a| { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, a); }
+    if (prefix.len > 0) { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, prefix); }
+    var argv = std.ArrayList([]const u8).empty;
+    try argv.append(allocator, "inshellisense");
+    try argv.append(allocator, "complete");
+    try argv.append(allocator, cmdline.items);
+    const result = std.process.run(allocator, io, .{
+        .argv = argv.items, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024),
+        .environ_map = environ_map,
+    }) catch |err| switch (err) {
+        error.StreamTooLong, error.FileNotFound, error.AccessDenied => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout); defer allocator.free(result.stderr);
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    // Parse JSON output for inshellisense
+    // Simple approach: extract values from JSON
+    if (result.stdout.len > 0) {
+        var json = result.stdout;
+        // Find "name" fields
+        var pos: usize = 0;
+        while (pos < json.len) {
+            const name_key = std.mem.indexOf(u8, json[pos..], "\"name\": \"") orelse break;
+            const val_start = pos + name_key + 9;
+            const val_end = std.mem.indexOfScalar(u8, json[val_start..], '"') orelse break;
+            const value = json[val_start .. val_start + val_end];
+            pos = val_start + val_end;
+            // Look for description after this
+            var desc: []const u8 = "";
+            if (std.mem.indexOf(u8, json[pos..], "\"description\": \"")) |desc_key| {
+                const d_start = pos + desc_key + 16;
+                const d_end = std.mem.indexOfScalar(u8, json[d_start..], '"') orelse 0;
+                if (d_end > 0) desc = json[d_start .. d_start + d_end];
+            }
+            try candidates.append(allocator, .{ .value = try allocator.dupe(u8, value), .description = try allocator.dupe(u8, desc) });
+        }
+    }
+    return candidates.toOwnedSlice(allocator);
 }
 
 /// Bridge: jj — run with COMPLETE=fish
 fn bridgeJJ(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
-    _ = allocator; _ = io; _ = cmd; _ = args; _ = prefix; _ = environ_map;
-    return &.{};
+    var env = std.process.Environ.Map.init(allocator);
+    if (environ_map) |em| { var it = em.iterator(); while (it.next()) |entry| { try env.put(entry.key_ptr.*, entry.value_ptr.*); } }
+    try env.put("COMPLETE", "fish");
+    var argv = std.ArrayList([]const u8).empty;
+    try argv.append(allocator, cmd);
+    try argv.append(allocator, "--");
+    for (args) |a| try argv.append(allocator, a);
+    if (prefix.len > 0) try argv.append(allocator, prefix);
+    const result = std.process.run(allocator, io, .{
+        .argv = argv.items, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024), .environ_map = &env,
+    }) catch |err| switch (err) {
+        error.StreamTooLong, error.FileNotFound, error.AccessDenied => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout); defer allocator.free(result.stderr);
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    const is_flags = prefix.len > 0 and prefix[0] == '-';
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+        const is_line_flag = trimmed.len > 0 and trimmed[0] == '-';
+        if (is_flags != is_line_flag) continue;
+        if (std.mem.indexOfScalar(u8, trimmed, '\t')) |tab| {
+            try candidates.append(allocator, .{ .value = try allocator.dupe(u8, trimmed[0..tab]), .description = try allocator.dupe(u8, trimmed[tab + 1 ..]) });
+        } else {
+            try candidates.append(allocator, .{ .value = try allocator.dupe(u8, trimmed) });
+        }
+    }
+    return candidates.toOwnedSlice(allocator);
 }
 
 /// Bridge: kingpin — run with --completion-bash
 fn bridgeKingpin(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
-    _ = allocator; _ = io; _ = cmd; _ = args; _ = prefix; _ = environ_map;
-    return &.{};
+    var argv = std.ArrayList([]const u8).empty;
+    try argv.append(allocator, cmd);
+    try argv.append(allocator, "--completion-bash");
+    for (args) |a| try argv.append(allocator, a);
+    if (prefix.len > 0) try argv.append(allocator, prefix);
+    const result = std.process.run(allocator, io, .{
+        .argv = argv.items, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024),
+        .environ_map = environ_map,
+    }) catch |err| switch (err) {
+        error.StreamTooLong, error.FileNotFound, error.AccessDenied => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout); defer allocator.free(result.stderr);
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len > 0) try candidates.append(allocator, .{ .value = try allocator.dupe(u8, trimmed) });
+    }
+    // Fallback to files if no candidates
+    return candidates.toOwnedSlice(allocator);
 }
 
 /// Bridge: kitten — run `kitten __complete__ json`
@@ -342,22 +671,107 @@ fn bridgeKitten(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args:
     return &.{};
 }
 
+/// Bridge: powershell — run pwsh with CommandCompletion::CompleteInput
+fn bridgePowershell(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    var cmdline = std.ArrayList(u8).empty;
+    try cmdline.appendSlice(allocator, cmd);
+    for (args) |a| { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, a); }
+    if (prefix.len > 0) { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, prefix); }
+    var env = std.process.Environ.Map.init(allocator);
+    if (environ_map) |em| { var it = em.iterator(); while (it.next()) |entry| { try env.put(entry.key_ptr.*, entry.value_ptr.*); } }
+    const home = if (environ_map) |em| em.get("HOME") orelse "/tmp" else "/tmp";
+    const config_dir = try std.fmt.allocPrint(allocator, "{s}/.config/carapace/bridge/powershell", .{home});
+    defer allocator.free(config_dir);
+    const snippet = try std.fmt.allocPrint(allocator,
+        "Get-Content \"{s}/Microsoft.PowerShell_profile.ps1\" | Out-String | Invoke-Expression;[System.Management.Automation.CommandCompletion]::CompleteInput(\"{s}\", {d}, $null).CompletionMatches | ConvertTo-Json",
+        .{ config_dir, cmdline.items, cmdline.items.len });
+    defer allocator.free(snippet);
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ "pwsh", "-Command", snippet }, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024), .environ_map = &env,
+    }) catch |err| switch (err) {
+        error.StreamTooLong, error.FileNotFound, error.AccessDenied => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout); defer allocator.free(result.stderr);
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    // Parse JSON from powershell: [{"CompletionText":"...","ListItemText":"...","ToolTip":"..."}]
+    if (result.stdout.len > 0) {
+        var pos: usize = 0;
+        while (pos < result.stdout.len) {
+            const ct_key = std.mem.indexOf(u8, result.stdout[pos..], "\"CompletionText\": \"") orelse break;
+            const val_start = pos + ct_key + 19;
+            const val_end = std.mem.indexOfScalar(u8, result.stdout[val_start..], '"') orelse break;
+            var value = result.stdout[val_start .. val_start + val_end];
+            // Strip trailing space (nospace indicator)
+            if (value.len > 0 and value[value.len - 1] == ' ') value = value[0 .. value.len - 1];
+            pos = val_start + val_end;
+            var desc: []const u8 = "";
+            if (std.mem.indexOf(u8, result.stdout[pos..], "\"ToolTip\": \"")) |tt_key| {
+                const d_start = pos + tt_key + 11;
+                const d_end = std.mem.indexOfScalar(u8, result.stdout[d_start..], '"') orelse 0;
+                if (d_end > 0) desc = result.stdout[d_start .. d_start + d_end];
+            }
+            // Skip if CompletionText == ToolTip
+            if (std.mem.eql(u8, value, desc)) desc = "";
+            try candidates.append(allocator, .{ .value = try allocator.dupe(u8, value), .description = try allocator.dupe(u8, desc) });
+        }
+    }
+    return candidates.toOwnedSlice(allocator);
+}
+
 /// Bridge: urfavecli — run with --generate-shell-completion
 fn bridgeUrfavecli(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
-    _ = allocator; _ = io; _ = cmd; _ = args; _ = prefix; _ = environ_map;
-    return &.{};
+    var argv = std.ArrayList([]const u8).empty;
+    try argv.append(allocator, cmd);
+    for (args) |a| try argv.append(allocator, a);
+    if (prefix.len > 0) try argv.append(allocator, prefix);
+    try argv.append(allocator, "--generate-shell-completion");
+    var env = std.process.Environ.Map.init(allocator);
+    if (environ_map) |em| { var it = em.iterator(); while (it.next()) |entry| { try env.put(entry.key_ptr.*, entry.value_ptr.*); } }
+    try env.put("SHELL", "zsh");
+    const result = std.process.run(allocator, io, .{
+        .argv = argv.items, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024), .environ_map = &env,
+    }) catch |err| switch (err) {
+        error.StreamTooLong, error.FileNotFound, error.AccessDenied => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout); defer allocator.free(result.stderr);
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+        if (std.mem.indexOfScalar(u8, trimmed, ':')) |colon| {
+            try candidates.append(allocator, .{ .value = try allocator.dupe(u8, trimmed[0..colon]), .description = try allocator.dupe(u8, trimmed[colon + 1 ..]) });
+        } else {
+            try candidates.append(allocator, .{ .value = try allocator.dupe(u8, trimmed) });
+        }
+    }
+    return candidates.toOwnedSlice(allocator);
 }
 
 /// Bridge: urfavecli v1 — run with --generate-bash-completion
 fn bridgeUrfavecliV1(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
-    _ = allocator; _ = io; _ = cmd; _ = args; _ = prefix; _ = environ_map;
-    return &.{};
-}
-
-/// Bridge: powershell — stub
-fn bridgePowershell(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
-    _ = allocator; _ = io; _ = cmd; _ = args; _ = prefix; _ = environ_map;
-    return &.{};
+    var argv = std.ArrayList([]const u8).empty;
+    try argv.append(allocator, cmd);
+    for (args) |a| try argv.append(allocator, a);
+    if (prefix.len > 0) try argv.append(allocator, prefix);
+    try argv.append(allocator, "--generate-bash-completion");
+    const result = std.process.run(allocator, io, .{
+        .argv = argv.items, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024),
+        .environ_map = environ_map,
+    }) catch |err| switch (err) {
+        error.StreamTooLong, error.FileNotFound, error.AccessDenied => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout); defer allocator.free(result.stderr);
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len > 0) try candidates.append(allocator, .{ .value = try allocator.dupe(u8, trimmed) });
+    }
+    return candidates.toOwnedSlice(allocator);
 }
 
 /// Bridge: yargs — run with --get-yargs-completions
