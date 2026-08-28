@@ -47,7 +47,7 @@ zig build -Dtarget=aarch64-linux-musl
 
 ```
 src/
-├── main.zig       # CLI entry: _carapace, bash/zsh/fish/powershell, run, export, --dash-repl
+├── main.zig       # CLI entry: _carapace, bash/zsh/fish/powershell, run, export
 ├── spec.zig       # Command/Flag/Completion types + YAML decode + SpecInfo discovery
 ├── yaml.zig       # ~676 LOC hand-written YAML subset parser (recursive descent, no deps)
 ├── flag.zig       # Flag string parser (compact syntax: --optarg?=, --repeatable*, --hidden&)
@@ -58,7 +58,6 @@ src/
     ├── zsh.zig         # Zsh snippet + output formatting (multi-block format)
     ├── fish.zig        # Fish snippet + output formatting
     ├── powershell.zig  # Powershell snippet + output formatting (JSON via ConvertFrom-Json)
-    ├── dash.zig        # Raw-mode interactive REPL for dash (--dash-repl)
     └── export.zig      # JSON export format (carapace-compatible)
 ```
 
@@ -95,9 +94,6 @@ tinycarapace <name> export [<args...>]
 
 # Execute the spec's run field
 tinycarapace <name> run [<args...>]
-
-# Interactive REPL with completion (dash/raw mode)
-tinycarapace <name> --dash-repl
 ```
 
 ---
@@ -319,7 +315,6 @@ From `plan.md`:
 - **Phase 3 (Extended macros)**: ✅ All modifiers, `$message`, `$list`, `$multiparts`, `$chdir`, `$split`, `$splitp`, `$bridge.*`
 - **Phase 4 (Shell support)**: ✅ Bash, zsh, fish, powershell (all with upstream-compatible output formats)
 - **Phase 5 (Variable expansion & run mode)**: ✅ Variable expansion, `run` mode, `non-interspersed`, `exclusiveflags`, `group`, `nargs`
-- **Phase 6 (Dash readline)**: ✅ Raw-mode REPL with TAB completion
 
 ### Not implemented (deferred)
 

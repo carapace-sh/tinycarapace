@@ -133,7 +133,6 @@ src/
 | fish | ✅ | ✅ | ✅ |
 | powershell | ✅ | ✅ | ✅ (JSON via ConvertFrom-Json) |
 | elvish | ❌ | ❌ | ❌ |
-| Dash readline (stretch) | ✅ | ✅ | ✅ (`--dash-repl`) |
 
 ### CLI
 | Mode | Status |
@@ -143,7 +142,6 @@ src/
 | `tinycarapace _carapace bash` (init script) | ✅ |
 | `tinycarapace spec.yaml export` (shell-agnostic export) | ✅ |
 | `tinycarapace spec.yaml run` (run mode) | ✅ |
-| `tinycarapace spec.yaml --dash-repl` | ✅ |
 
 ### Bash snippet features
 | Feature | Status |
@@ -339,46 +337,6 @@ Small, focused additions to round out the core engine.
 
 ---
 
-## Phase 6 — Dash readline (stretch)
-
-### The problem
-
-dash has **no programmable completion** — no `complete` builtin, no `COMP_LINE`,
-no `COMPREPLY`. It uses a bare-bones readline.
-
-### Approach: Raw mode read loop
-
-Write a small interactive line reader that:
-1. Puts the terminal in raw mode (`ioctl TCSETS`, disable `ICANON|ECHO|ISIG`)
-2. Reads keystrokes one at a time
-3. Maintains a line buffer + cursor position
-4. On TAB, calls the completion engine, displays candidates
-5. On Enter, restores terminal, executes the command via `execv`
-
-Zig makes this clean: direct syscalls, no libc needed, no signal handler runtime.
-
-### Implementation sketch
-
-```
-tinycarapace spec.yaml --dash-repl
-  → raw mode (ioctl TCSETS, disable ICANON|ECHO|ISIG)
-  → install SIGINT handler → restore terminal on signal
-  → loop:
-      read byte
-      if \t → invoke completion with current line
-         → single match: insert it
-         → multiple: print on next line, redisplay prompt + line
-      if \r or \n → break, exec line
-      if \x03 (Ctrl-C) → restore terminal, exit
-      if \x7f (Backspace) → delete before cursor
-      if printable → insert at cursor
-  → restore terminal
-  → exec the command
-```
-
-No history, no multi-line editing, no vi mode. Just: type, TAB to complete,
-Enter to run. This is genuinely useful in a container.
-
 ---
 
 ## Implementation Order (Recommended)
@@ -404,7 +362,6 @@ Enter to run. This is genuinely useful in a container.
 | 17 | 5d | `exclusiveflags` | ~30 |
 | 18 | 5e | `group` subcommand grouping | ~15 |
 | 19 | 5f | `nargs` / `default` | ~40 |
-| 20 | 6 | Dash readline | ~200 |
 
 ---
 
@@ -445,9 +402,6 @@ tinycarapace spec.yaml export [<args...>]
 
 # (Phase 5b) Run the spec as a command
 tinycarapace spec.yaml run [<args...>]
-
-# (Phase 6) Interactive dash REPL with completion
-tinycarapace spec.yaml --dash-repl
 ```
 
 ---

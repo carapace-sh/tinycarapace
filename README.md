@@ -49,7 +49,6 @@ tinycarapace <name> [bash|zsh|fish|powershell]          # Snippet for one comman
 tinycarapace <name> [bash|zsh|fish|powershell] <name> <args...>  # Completion callback
 tinycarapace <name> export [<args...>]                  # JSON export (carapace format)
 tinycarapace <name> run [<args...>]                     # Execute spec's run field
-tinycarapace <name> --dash-repl                         # Interactive REPL with completion
 ```
 
 Specs are discovered from these directories (in order of precedence):
@@ -85,7 +84,6 @@ full details.
 | Modifier chains (`$prefix`, `$suffix`, `$nospace`, `$style`, `$tag`, `$filter`, `$retain`, `$shift`, `$split`, `$usage`, `$uid`, `$suppress`) | ✅ |
 | Variable expansion (`${C_ARG0}`, `${C_FLAG_NAME}`, `${C_VALUE}`, `${VAR:-default}`) | ✅ |
 | Run mode (alias, macro, script) | ✅ |
-| Dash readline REPL | ✅ |
 | Bridge fallback (`CARAPACE_BRIDGES`) | ✅ |
 | Persistent flags, exclusive flags, group, nargs | ✅ |
 | Binary size (ReleaseSmall, stripped) | **270 KB** |
