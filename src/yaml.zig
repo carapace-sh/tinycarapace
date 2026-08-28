@@ -229,7 +229,13 @@ const Parser = struct {
 
             // Inline value
             const c = self.src[self.pos];
-            if (c == '[') {
+            if (c == '|') {
+                // Literal block scalar: run: |
+                //   #!/bin/bash
+                //   echo hello
+                const val = try self.parseLiteralBlock(indent);
+                try entries.append(self.alloc(), .{ .key = self.dup(key), .value = .{ .scalar = self.dup(val) } });
+            } else if (c == '[') {
                 const val = try self.parseFlowSeq();
                 try entries.append(self.alloc(), .{ .key = self.dup(key), .value = val });
                 self.skipToEOL();
@@ -323,11 +329,37 @@ const Parser = struct {
         }
         if (self.pos < self.src.len and self.src[self.pos] == '[') return self.parseFlowSeq();
         if (self.pos < self.src.len and self.src[self.pos] == '{') return self.parseFlowMap();
+        if (self.pos < self.src.len and self.src[self.pos] == '|') return .{ .scalar = self.dup(try self.parseLiteralBlock(li)) };
         if (self.findColon(self.pos) != null) {
             self.pos -= li;
             return self.parseMap(li);
         }
         return .{ .scalar = self.dup(self.readInline()) };
+    }
+
+    /// Parse a literal block scalar: `|` followed by indented lines.
+    fn parseLiteralBlock(self: *Parser, indent: usize) ![]const u8 {
+        // The `|` has been consumed, skip to end of line
+        self.skipToEOL();
+        const block_start = self.pos;
+        // Read all lines indented deeper than `indent`
+        while (self.pos < self.src.len) {
+            const save = self.pos;
+            const line_indent = self.countIndent();
+            if (line_indent <= indent) {
+                self.pos = save;
+                break;
+            }
+            if (self.pos >= self.src.len or self.src[self.pos] == '\n' or self.src[self.pos] == '#') {
+                self.skipToEOL();
+                continue;
+            }
+            // Skip indentation and read the rest of the line
+            while (self.pos < self.src.len and self.src[self.pos] != '\n') : (self.pos += 1) {}
+            if (self.pos < self.src.len) self.pos += 1;
+        }
+        const block_end = self.pos;
+        return self.dup(self.src[block_start..block_end]);
     }
 
     fn parseInlineMap(self: *Parser, indent: usize) anyerror!Value {
@@ -686,4 +718,152 @@ test "comment handling" {
     const val = try parse(arena.allocator(), yaml);
     try std.testing.expectEqualStrings("cmd", val.getScalar("name").?);
     try std.testing.expectEqualStrings("hi", val.getScalar("description").?);
+}
+
+test "literal block scalar" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const yaml =
+        \\run: |
+        \\  #!/usr/bin/env bash
+        \\  echo "hello"
+        \\  for arg in "$@"; do
+        \\    echo "$arg"
+        \\  done
+    ;
+    const val = try parse(arena.allocator(), yaml);
+    const run = val.getScalar("run").?;
+    try std.testing.expect(std.mem.indexOf(u8, run, "#!/usr/bin/env bash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, run, "echo \"hello\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, run, "for arg in") != null);
+}
+
+test "flow map" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const yaml = "nested: {key: value, num: 42}\n";
+    const val = try parse(arena.allocator(), yaml);
+    const nested = val.getMap("nested").?;
+    try std.testing.expectEqualStrings("value", getScalarFromMap(nested, "key").?);
+    try std.testing.expectEqualStrings("42", getScalarFromMap(nested, "num").?);
+}
+
+test "extended flag notation" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const yaml =
+        \\flags:
+        \\  --nargs-two=: {description: consumes two args, nargs: 2}
+        \\  --default-val=: {description: has default, default: /tmp/out.txt}
+    ;
+    const val = try parse(arena.allocator(), yaml);
+    const flags = val.getMap("flags").?;
+    try std.testing.expectEqual(@as(usize, 2), flags.len);
+    try std.testing.expectEqualStrings("--nargs-two=", flags[0].key);
+    try std.testing.expectEqualStrings("--default-val=", flags[1].key);
+}
+
+test "dash and dashany completion" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const yaml =
+        \\completion:
+        \\  dash:
+        \\    - [d1, d2]
+        \\    - [d3]
+        \\  dashany: [extra]
+    ;
+    const val = try parse(arena.allocator(), yaml);
+    const comp = val.get("completion").?;
+    const dash = comp.getList("dash").?;
+    try std.testing.expectEqual(@as(usize, 2), dash.len);
+    try std.testing.expectEqualStrings("d1", dash[0].list[0].scalar);
+    try std.testing.expectEqualStrings("d3", dash[1].list[0].scalar);
+    const dashany = comp.getList("dashany").?;
+    try std.testing.expectEqualStrings("extra", dashany[0].scalar);
+}
+
+test "exclusive flags" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const yaml =
+        \\exclusiveflags:
+        \\  - [add, delete]
+        \\  - [create, remove]
+    ;
+    const val = try parse(arena.allocator(), yaml);
+    const excl = val.getList("exclusiveflags").?;
+    try std.testing.expectEqual(@as(usize, 2), excl.len);
+    try std.testing.expectEqualStrings("add", excl[0].list[0].scalar);
+    try std.testing.expectEqualStrings("delete", excl[0].list[1].scalar);
+}
+
+test "empty string in flow sequence" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const yaml = "items: [a, , b]\n";
+    const val = try parse(arena.allocator(), yaml);
+    const items = val.getList("items").?;
+    // Empty entries between commas are skipped
+    try std.testing.expectEqual(@as(usize, 2), items.len);
+    try std.testing.expectEqualStrings("a", items[0].scalar);
+    try std.testing.expectEqualStrings("b", items[1].scalar);
+}
+
+test "boolean values" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const yaml =
+        \\hidden: true
+        \\visible: false
+    ;
+    const val = try parse(arena.allocator(), yaml);
+    try std.testing.expectEqualStrings("true", val.getScalar("hidden").?);
+    try std.testing.expectEqualStrings("false", val.getScalar("visible").?);
+}
+
+test "integer values" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const yaml =
+        \\nargs: 2
+        \\negative: -1
+    ;
+    const val = try parse(arena.allocator(), yaml);
+    try std.testing.expectEqualStrings("2", val.getScalar("nargs").?);
+    try std.testing.expectEqualStrings("-1", val.getScalar("negative").?);
+}
+
+test "empty input" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const val = try parse(arena.allocator(), "");
+    try std.testing.expectEqualStrings("", val.scalar);
+}
+
+test "trailing whitespace lines" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const yaml = "name: mycmd\n\nother: val\n";
+    const val = try parse(arena.allocator(), yaml);
+    try std.testing.expectEqualStrings("mycmd", val.getScalar("name").?);
+    try std.testing.expectEqualStrings("val", val.getScalar("other").?);
+}
+
+test "empty value with subcommand block" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const yaml =
+        \\name: root
+        \\commands:
+        \\  - name: sub
+        \\    flags:
+        \\      --verbose:
+    ;
+    const val = try parse(arena.allocator(), yaml);
+    const cmds = val.getList("commands").?;
+    try std.testing.expectEqualStrings("sub", cmds[0].getScalar("name").?);
+    const flags = cmds[0].getMap("flags").?;
+    try std.testing.expectEqualStrings("--verbose", flags[0].key);
+    try std.testing.expectEqualStrings("", flags[0].value.scalar);
 }
