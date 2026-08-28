@@ -50,6 +50,7 @@ pub fn resolveMacro(allocator: std.mem.Allocator, io: std.Io, macro: []const u8,
     // $spec(path) — delegate to another spec file
     if (std.mem.startsWith(u8, macro, "$spec")) {
         const candidates = @import("traverse.zig").resolveSpec(allocator, io, macro, prefix, environ_map);
+        defer allocator.free(candidates);
         var result = std.ArrayList(traverse.Candidate).empty;
         for (candidates) |c| {
             try result.append(allocator, .{

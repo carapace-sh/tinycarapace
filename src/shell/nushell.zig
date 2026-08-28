@@ -54,8 +54,6 @@ pub fn formatOutput(allocator: std.mem.Allocator, candidates: []traverse.Candida
     try buf.append(allocator, '[');
     for (candidates, 0..) |c, i| {
         if (i > 0) try buf.append(allocator, ',');
-        const suffix = if (c.nospace) "" else " ";
-        _ = suffix;
         try buf.print(allocator,
             \\{{"value":"{s}","display":"{s}","description":"{s}"}}
         , .{ c.value, c.value, c.description });

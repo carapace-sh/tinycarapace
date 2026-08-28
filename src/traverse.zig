@@ -365,9 +365,14 @@ pub fn resolveBridgeFallback(allocator: std.mem.Allocator, io: std.Io, cmd_name:
             try macro.appendSlice(allocator, a);
         }
         try macro.append(allocator, ')');
+        defer macro.deinit(allocator);
 
         const candidates = action.resolveMacro(allocator, io, macro.items, prefix, environ_map) catch continue;
-        if (candidates.len > 0) return candidates;
+        if (candidates.len > 0) {
+            // Free the macro buffer before returning — the caller's arena will free candidates
+            return candidates;
+        }
+        allocator.free(candidates);
     }
 
     return &.{};

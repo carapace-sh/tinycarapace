@@ -4,6 +4,50 @@ const Flag = @import("flag.zig").Flag;
 const action = @import("action.zig");
 const traverse = @import("traverse.zig");
 
+/// Resolve a single raw value string, append duplicated candidates that match prefix.
+fn resolveSingleValue(allocator: std.mem.Allocator, io: std.Io, candidates: *std.ArrayList(traverse.Candidate), raw: []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) !void {
+    if (raw.len > 0 and raw[0] == '$') {
+        if (std.mem.startsWith(u8, raw, "$spec")) {
+            const spec_candidates = traverse.resolveSpec(allocator, io, raw, prefix, environ_map);
+            defer allocator.free(spec_candidates);
+            for (spec_candidates) |c| {
+                if (std.mem.startsWith(u8, c.value, prefix)) {
+                    try candidates.append(allocator, .{
+                        .value = try allocator.dupe(u8, c.value),
+                        .description = try allocator.dupe(u8, c.description),
+                        .style = try allocator.dupe(u8, c.style),
+                        .nospace = c.nospace,
+                        .tag = try allocator.dupe(u8, c.tag),
+                    });
+                }
+            }
+        } else {
+            const macro_candidates = try action.resolveMacro(allocator, io, raw, prefix, environ_map);
+            defer allocator.free(macro_candidates);
+            for (macro_candidates) |c| {
+                if (std.mem.startsWith(u8, c.value, prefix)) {
+                    try candidates.append(allocator, .{
+                        .value = try allocator.dupe(u8, c.value),
+                        .description = try allocator.dupe(u8, c.description),
+                        .style = try allocator.dupe(u8, c.style),
+                        .nospace = c.nospace,
+                        .tag = try allocator.dupe(u8, c.tag),
+                    });
+                }
+            }
+        }
+    } else {
+        const parsed = traverse.splitValue(raw);
+        if (std.mem.startsWith(u8, parsed.value, prefix)) {
+            try candidates.append(allocator, .{
+                .value = try allocator.dupe(u8, parsed.value),
+                .description = try allocator.dupe(u8, parsed.description),
+                .style = try allocator.dupe(u8, parsed.style),
+            });
+        }
+    }
+}
+
 /// Resolve a list of raw completion values into candidates.
 /// Macro values (starting with `$`) are passed to `action.resolveMacro`.
 pub fn resolveValues(allocator: std.mem.Allocator, io: std.Io, values: []const []const u8, prefix: []const u8) ![]traverse.Candidate {
@@ -16,59 +60,9 @@ pub fn resolveValuesWithEnv(allocator: std.mem.Allocator, io: std.Io, values: []
         if (flag_values) |fv| {
             const expanded = try traverse.expandVariables(allocator, v, fv, positional_args, prefix);
             defer allocator.free(expanded);
-            if (expanded.len > 0 and expanded[0] == '$') {
-                if (std.mem.startsWith(u8, expanded, "$spec")) {
-                    const spec_candidates = traverse.resolveSpec(allocator, io, expanded, prefix, environ_map);
-                    for (spec_candidates) |c| {
-                        if (std.mem.startsWith(u8, c.value, prefix)) {
-                            try candidates.append(allocator, .{
-                                .value = try allocator.dupe(u8, c.value),
-                                .description = try allocator.dupe(u8, c.description),
-                                .style = try allocator.dupe(u8, c.style),
-                                .nospace = c.nospace,
-                                .tag = try allocator.dupe(u8, c.tag),
-                            });
-                        }
-                    }
-                } else {
-                    const macro_candidates = try action.resolveMacro(allocator, io, expanded, prefix, environ_map);
-                    for (macro_candidates) |c| {
-                        if (std.mem.startsWith(u8, c.value, prefix)) {
-                            try candidates.append(allocator, .{
-                                .value = try allocator.dupe(u8, c.value),
-                                .description = try allocator.dupe(u8, c.description),
-                                .style = try allocator.dupe(u8, c.style),
-                                .nospace = c.nospace,
-                                .tag = try allocator.dupe(u8, c.tag),
-                            });
-                        }
-                    }
-                }
-            } else {
-                const parsed = traverse.splitValue(expanded);
-                if (std.mem.startsWith(u8, parsed.value, prefix)) {
-                    try candidates.append(allocator, .{ .value = try allocator.dupe(u8, parsed.value), .description = try allocator.dupe(u8, parsed.description), .style = try allocator.dupe(u8, parsed.style) });
-                }
-            }
+            try resolveSingleValue(allocator, io, &candidates, expanded, prefix, environ_map);
         } else {
-            if (v.len > 0 and v[0] == '$') {
-                if (std.mem.startsWith(u8, v, "$spec")) {
-                    const spec_candidates = traverse.resolveSpec(allocator, io, v, prefix, environ_map);
-                    for (spec_candidates) |c| {
-                        if (std.mem.startsWith(u8, c.value, prefix)) try candidates.append(allocator, c);
-                    }
-                } else {
-                    const macro_candidates = try action.resolveMacro(allocator, io, v, prefix, environ_map);
-                    for (macro_candidates) |c| {
-                        if (std.mem.startsWith(u8, c.value, prefix)) try candidates.append(allocator, c);
-                    }
-                }
-            } else {
-                const parsed = traverse.splitValue(v);
-                if (std.mem.startsWith(u8, parsed.value, prefix)) {
-                    try candidates.append(allocator, .{ .value = parsed.value, .description = parsed.description, .style = parsed.style });
-                }
-            }
+            try resolveSingleValue(allocator, io, &candidates, v, prefix, environ_map);
         }
     }
     return candidates.toOwnedSlice(allocator);
