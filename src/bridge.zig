@@ -1,0 +1,348 @@
+const std = @import("std");
+const traverse = @import("traverse.zig");
+
+/// Parse "$bridge.name(command, args...)" — delegate to framework-specific completion.
+pub fn resolveBridge(allocator: std.mem.Allocator, io: std.Io, macro: []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    const paren = std.mem.indexOfScalar(u8, macro, '(') orelse return &.{};
+    if (macro[macro.len - 1] != ')') return &.{};
+
+    const bridge_dot = macro[0..paren];
+    const bridge_name = if (std.mem.startsWith(u8, bridge_dot, "$bridge."))
+        bridge_dot[8..]
+    else
+        bridge_dot[7..];
+
+    const args_part = macro[paren + 1 .. macro.len - 1];
+    if (args_part.len == 0) return &.{};
+
+    var cmd_args = std.ArrayList([]const u8).empty;
+    var arg_it = std.mem.splitScalar(u8, args_part, ',');
+    while (arg_it.next()) |arg| {
+        const trimmed = std.mem.trim(u8, arg, " \t");
+        if (trimmed.len > 0) {
+            const unquoted = if (trimmed.len >= 2 and (trimmed[0] == '\'' and trimmed[trimmed.len - 1] == '\'' or trimmed[0] == '"' and trimmed[trimmed.len - 1] == '"'))
+                trimmed[1 .. trimmed.len - 1]
+            else
+                trimmed;
+            try cmd_args.append(allocator, try allocator.dupe(u8, unquoted));
+        }
+    }
+    if (cmd_args.items.len == 0) return &.{};
+
+    const cmd = cmd_args.items[0];
+    const bridge_args = cmd_args.items[1..];
+
+    if (std.mem.eql(u8, bridge_name, "cobra")) {
+        return try bridgeCobra(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "bash")) {
+        return try bridgeBash(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "zsh")) {
+        return try bridgeZsh(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "fish")) {
+        return try bridgeFish(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "carapace")) {
+        return try bridgeCarapace(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "carapace-bin")) {
+        return try bridgeCarapaceBin(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "argcomplete")) {
+        return try bridgeArgcomplete(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "click")) {
+        return try bridgeClick(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "powershell")) {
+        return try bridgePowershell(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "yargs")) {
+        return try bridgeYargs(allocator, io, cmd, bridge_args, prefix, environ_map);
+    }
+    return &.{};
+}
+
+pub fn execCommand(allocator: std.mem.Allocator, io: std.Io, shell: []const u8, command: []const u8) ![]traverse.Candidate {
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ shell, "-c", command },
+        .stdout_limit = .limited(1024 * 64),
+        .stderr_limit = .limited(1024),
+    }) catch |err| switch (err) {
+        error.StreamTooLong => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len > 0) {
+            const parsed = traverse.splitValue(trimmed);
+            try candidates.append(allocator, .{
+                .value = try allocator.dupe(u8, parsed.value),
+                .description = try allocator.dupe(u8, parsed.description),
+                .style = try allocator.dupe(u8, parsed.style),
+            });
+        }
+    }
+    return candidates.toOwnedSlice(allocator);
+}
+
+/// Bridge: cobra — run `cmd __complete <args>`
+fn bridgeCobra(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    var argv = std.ArrayList([]const u8).empty;
+    try argv.append(allocator, cmd);
+    try argv.append(allocator, "__complete");
+    for (args) |a| try argv.append(allocator, a);
+    if (prefix.len > 0) try argv.append(allocator, prefix);
+    const result = std.process.run(allocator, io, .{
+        .argv = argv.items, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024),
+        .environ_map = environ_map,
+    }) catch |err| switch (err) {
+        error.StreamTooLong, error.FileNotFound, error.AccessDenied => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+        if (trimmed[0] == ':') continue;
+        const parsed = traverse.splitValue(trimmed);
+        try candidates.append(allocator, .{
+            .value = try allocator.dupe(u8, parsed.value),
+            .description = try allocator.dupe(u8, parsed.description),
+        });
+    }
+    return candidates.toOwnedSlice(allocator);
+}
+
+/// Bridge: bash — run bash completion with COMP_LINE
+fn bridgeBash(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    var cmdline = std.ArrayList(u8).empty;
+    try cmdline.appendSlice(allocator, cmd);
+    for (args) |a| { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, a); }
+    if (prefix.len > 0) { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, prefix); }
+
+    var env = std.process.Environ.Map.init(allocator);
+    if (environ_map) |em| { var it = em.iterator(); while (it.next()) |entry| { try env.put(entry.key_ptr.*, entry.value_ptr.*); } }
+    try env.put("COMP_LINE", cmdline.items);
+    try env.put("COMP_POINT", try std.fmt.allocPrint(allocator, "{d}", .{cmdline.items.len}));
+    try env.put("COMP_TYPE", "63");
+
+    var script = std.ArrayList(u8).empty;
+    try script.appendSlice(allocator,
+        "set +o history\nCOMP_WORDS=($COMP_LINE)\n" ++
+        "if [ \"${COMP_LINE: -1}\" = \" \" ]; then COMP_WORDS+=(\"\")\nfi\n" ++
+        "COMP_CWORD=$((${#COMP_WORDS[@]} - 1))\nCOMP_POINT=${#COMP_LINE}\n" ++
+        "[ -f /usr/share/bash-completion/bash_completion ] && source /usr/share/bash-completion/bash_completion\n" ++
+        "[ -f /usr/local/share/bash-completion/bash_completion ] && source /usr/local/share/bash-completion/bash_completion\n" ++
+        "[ -f /data/data/com.termux/files/usr/share/bash-completion/bash_completion ] && source /data/data/com.termux/files/usr/share/bash-completion/bash_completion\n");
+    try script.appendSlice(allocator, "__load_completion \""); try script.appendSlice(allocator, cmd); try script.appendSlice(allocator, "\" 2>/dev/null\n");
+    try script.appendSlice(allocator, "_cf=$(complete -p \""); try script.appendSlice(allocator, cmd); try script.appendSlice(allocator, "\" 2>/dev/null | sed -r 's/.* -F ([^ ]+).*/\\1/')\n");
+    try script.appendSlice(allocator, "if [ -n \"$_cf\" ]; then \"$_cf\"\n  for i in \"${COMPREPLY[@]}\"; do\n    if [[ -d \"$i\" && \"$i\" != */ ]]; then echo \"$i/\"; else echo \"$i\"; fi; done\nfi\n");
+
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ "bash", "--rcfile", "/dev/null", "-i", "-c", script.items },
+        .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024), .environ_map = &env,
+    }) catch |err| switch (err) {
+        error.StreamTooLong, error.FileNotFound, error.AccessDenied => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout); defer allocator.free(result.stderr);
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len > 0) try candidates.append(allocator, .{ .value = try allocator.dupe(u8, trimmed) });
+    }
+    return candidates.toOwnedSlice(allocator);
+}
+
+/// Bridge: zsh — run zsh with compdef
+fn bridgeZsh(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    _ = allocator; _ = io; _ = cmd; _ = args; _ = prefix; _ = environ_map;
+    return &.{}; // TODO: implement zsh bridge
+}
+
+/// Bridge: fish — run fish with complete --do-complete
+fn bridgeFish(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    _ = allocator; _ = io; _ = cmd; _ = args; _ = prefix; _ = environ_map;
+    return &.{}; // TODO: implement fish bridge
+}
+
+/// Bridge: carapace — run `cmd _carapace export ""`
+fn bridgeCarapace(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    var argv = std.ArrayList([]const u8).empty;
+    try argv.append(allocator, cmd);
+    try argv.append(allocator, "_carapace"); try argv.append(allocator, "export"); try argv.append(allocator, "");
+    for (args) |a| try argv.append(allocator, a);
+    if (prefix.len > 0) try argv.append(allocator, prefix);
+    const result = std.process.run(allocator, io, .{
+        .argv = argv.items, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024),
+        .environ_map = environ_map,
+    }) catch |err| switch (err) {
+        error.StreamTooLong, error.FileNotFound, error.AccessDenied => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout); defer allocator.free(result.stderr);
+    return parseExportJson(allocator, result.stdout);
+}
+
+/// Bridge: carapace-bin — run `carapace <cmd> export ""`
+fn bridgeCarapaceBin(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    var argv = std.ArrayList([]const u8).empty;
+    try argv.append(allocator, "carapace");
+    try argv.append(allocator, cmd); try argv.append(allocator, "export"); try argv.append(allocator, "");
+    for (args) |a| try argv.append(allocator, a);
+    if (prefix.len > 0) try argv.append(allocator, prefix);
+    const result = std.process.run(allocator, io, .{
+        .argv = argv.items, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024),
+        .environ_map = environ_map,
+    }) catch |err| switch (err) {
+        error.StreamTooLong, error.FileNotFound, error.AccessDenied => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout); defer allocator.free(result.stderr);
+    return parseExportJson(allocator, result.stdout);
+}
+
+/// Bridge: argcomplete — run with _ARGCOMPLETE=1
+fn bridgeArgcomplete(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    var cmdline = std.ArrayList(u8).empty;
+    try cmdline.appendSlice(allocator, cmd);
+    for (args) |a| { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, a); }
+    if (prefix.len > 0) { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, prefix); }
+    var env = std.process.Environ.Map.init(allocator);
+    if (environ_map) |em| { var it = em.iterator(); while (it.next()) |entry| { try env.put(entry.key_ptr.*, entry.value_ptr.*); } }
+    try env.put("_ARGCOMPLETE", "1"); try env.put("_ARGCOMPLETE_DFS", "\\t"); try env.put("_ARGCOMPLETE_IFS", "\\n");
+    try env.put("_ARGCOMPLETE_SHELL", "fish"); try env.put("COMP_LINE", cmdline.items);
+    try env.put("COMP_POINT", try std.fmt.allocPrint(allocator, "{d}", .{cmdline.items.len}));
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ cmd }, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024), .environ_map = &env,
+    }) catch |err| switch (err) {
+        error.StreamTooLong, error.FileNotFound, error.AccessDenied => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout); defer allocator.free(result.stderr);
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len > 0) { const parsed = traverse.splitValue(trimmed); try candidates.append(allocator, .{ .value = try allocator.dupe(u8, parsed.value), .description = try allocator.dupe(u8, parsed.description) }); }
+    }
+    return candidates.toOwnedSlice(allocator);
+}
+
+/// Bridge: click — run with _<CMD>_COMPLETE=zsh_complete
+fn bridgeClick(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    var cmdline = std.ArrayList(u8).empty;
+    try cmdline.appendSlice(allocator, cmd);
+    for (args) |a| { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, a); }
+    if (prefix.len > 0) { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, prefix); }
+    var env = std.process.Environ.Map.init(allocator);
+    if (environ_map) |em| { var it = em.iterator(); while (it.next()) |entry| { try env.put(entry.key_ptr.*, entry.value_ptr.*); } }
+    try env.put("COMP_WORDS", cmdline.items);
+    var word_count: usize = 1;
+    for (cmdline.items) |c| { if (c == ' ') word_count += 1; }
+    try env.put("COMP_CWORD", try std.fmt.allocPrint(allocator, "{d}", .{word_count}));
+    var upper_buf: [256]u8 = undefined;
+    var upper_len: usize = 0;
+    for (cmd) |c| { upper_buf[upper_len] = std.ascii.toUpper(c); upper_len += 1; }
+    const env_var_name = try std.fmt.allocPrint(allocator, "_{s}_COMPLETE", .{upper_buf[0..upper_len]});
+    defer allocator.free(env_var_name);
+    try env.put(env_var_name, "zsh_complete");
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ cmd }, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024), .environ_map = &env,
+    }) catch |err| switch (err) {
+        error.StreamTooLong, error.FileNotFound, error.AccessDenied => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout); defer allocator.free(result.stderr);
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |_| {
+        const value_line = if (lines.next()) |l| std.mem.trim(u8, l, " \t\r") else break;
+        const desc_line = if (lines.next()) |l| std.mem.trim(u8, l, " \t\r") else "";
+        if (value_line.len > 0) try candidates.append(allocator, .{ .value = try allocator.dupe(u8, value_line), .description = try allocator.dupe(u8, desc_line) });
+    }
+    return candidates.toOwnedSlice(allocator);
+}
+
+/// Bridge: powershell — stub
+fn bridgePowershell(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    _ = allocator; _ = io; _ = cmd; _ = args; _ = prefix; _ = environ_map;
+    return &.{};
+}
+
+/// Bridge: yargs — run with --get-yargs-completions
+fn bridgeYargs(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    var argv = std.ArrayList([]const u8).empty;
+    try argv.append(allocator, cmd); try argv.append(allocator, "--get-yargs-completions");
+    for (args) |a| try argv.append(allocator, a);
+    if (prefix.len > 0) try argv.append(allocator, prefix);
+    var env = std.process.Environ.Map.init(allocator);
+    if (environ_map) |em| { var it = em.iterator(); while (it.next()) |entry| { try env.put(entry.key_ptr.*, entry.value_ptr.*); } }
+    try env.put("SHELL", "zsh");
+    const result = std.process.run(allocator, io, .{
+        .argv = argv.items, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024), .environ_map = &env,
+    }) catch |err| switch (err) {
+        error.StreamTooLong, error.FileNotFound, error.AccessDenied => return &.{},
+        else => return err,
+    };
+    defer allocator.free(result.stdout); defer allocator.free(result.stderr);
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+        if (std.mem.indexOfScalar(u8, trimmed, ':')) |colon| {
+            try candidates.append(allocator, .{ .value = try allocator.dupe(u8, trimmed[0..colon]), .description = try allocator.dupe(u8, trimmed[colon + 1 ..]) });
+        } else {
+            try candidates.append(allocator, .{ .value = try allocator.dupe(u8, trimmed) });
+        }
+    }
+    return candidates.toOwnedSlice(allocator);
+}
+
+/// Parse carapace JSON export format.
+fn parseExportJson(allocator: std.mem.Allocator, json: []const u8) ![]traverse.Candidate {
+    var candidates = std.ArrayList(traverse.Candidate).empty;
+    const values_start = std.mem.indexOf(u8, json, "\"values\": [") orelse return &.{};
+    var rest = values_start + 11;
+    while (rest < json.len) {
+        const val_key = std.mem.indexOf(u8, json[rest..], "\"value\": \"") orelse break;
+        const val_start = rest + val_key + 10;
+        const val_end = std.mem.indexOfScalar(u8, json[val_start..], '"') orelse break;
+        const value = json[val_start .. val_start + val_end];
+        var desc: []const u8 = "";
+        const after_val = json[val_start + val_end ..];
+        if (std.mem.indexOf(u8, after_val, "\"description\": \"")) |desc_start| {
+            const d_start = desc_start + 16;
+            var d_end: usize = 0;
+            var i: usize = d_start;
+            while (i < after_val.len) {
+                if (after_val[i] == '\\' and i + 1 < after_val.len) { i += 2; continue; }
+                if (after_val[i] == '"') { d_end = i; break; }
+                i += 1;
+            }
+            if (d_end > 0) desc = after_val[d_start..d_end];
+        }
+        try candidates.append(allocator, .{ .value = try allocator.dupe(u8, value), .description = try allocator.dupe(u8, desc) });
+        rest = val_start + val_end;
+    }
+    return candidates.toOwnedSlice(allocator);
+}
+
+test "exec macro returns command output lines" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const candidates = try execCommand(arena.allocator(), std.testing.io, "sh", "echo one; echo two");
+    try std.testing.expectEqual(@as(usize, 2), candidates.len);
+    try std.testing.expectEqualStrings("one", candidates[0].value);
+    try std.testing.expectEqualStrings("two", candidates[1].value);
+}
+
+test "exec macro handles empty output" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const candidates = try execCommand(arena.allocator(), std.testing.io, "sh", "true");
+    try std.testing.expectEqual(@as(usize, 0), candidates.len);
+}

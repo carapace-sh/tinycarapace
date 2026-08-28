@@ -388,7 +388,10 @@ test {
     _ = @import("spec.zig");
     _ = @import("flag.zig");
     _ = @import("traverse.zig");
+    _ = @import("resolve.zig");
     _ = @import("action.zig");
+    _ = @import("builtins.zig");
+    _ = @import("bridge.zig");
     _ = @import("shell/bash.zig");
     _ = @import("shell/zsh.zig");
     _ = @import("shell/fish.zig");

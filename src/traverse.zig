@@ -2,6 +2,7 @@ const std = @import("std");
 const spec = @import("spec.zig");
 const Flag = @import("flag.zig").Flag;
 const action = @import("action.zig");
+const resolve = @import("resolve.zig");
 
 pub const Candidate = struct {
     value: []const u8,
@@ -239,7 +240,7 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
     }
 
     if (in_flag) |f| {
-        return completeFlagValueFull(allocator, io, current, f, value, environ_map, &flag_values, positional_args.items);
+        return resolve.completeFlagValueFull(allocator, io, current, f, value, environ_map, &flag_values, positional_args.items);
     }
 
     if (value.len > 0 and value[0] == '-' and flag_parsing) {
@@ -247,42 +248,42 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
             if (std.mem.indexOfScalar(u8, value, '=')) |eq| {
                 const flag_name = value[2..eq];
                 const prefix = value[eq + 1 ..];
-                return completeFlagValueWithPrefixFull(allocator, io, current, flag_name, prefix, environ_map, &flag_values, positional_args.items);
+                return resolve.completeFlagValueWithPrefixFull(allocator, io, current, flag_name, prefix, environ_map, &flag_values, positional_args.items);
             }
-            return completeFlagsWithExclusive(allocator, current, value, &consumed_flag_names);
+            return resolve.completeFlagsWithExclusive(allocator, current, value, &consumed_flag_names);
         }
         // Shorthand series: value is like "-v" or "-vf"
         // If only "-", complete all flags (longhand + shorthand)
         if (value.len == 1) {
-            return completeFlagsWithExclusive(allocator, current, value, &consumed_flag_names);
+            return resolve.completeFlagsWithExclusive(allocator, current, value, &consumed_flag_names);
         }
         // Check for = delimiter (non-POSIX -flag=value or POSIX -f=value)
         if (std.mem.indexOfScalar(u8, value, '=')) |eq| {
             const flag_name = value[1..eq];
             const prefix = value[eq + 1 ..];
             if (current.findFlag(flag_name)) |_| {
-                return completeFlagValueWithPrefixFull(allocator, io, current, flag_name, prefix, environ_map, &flag_values, positional_args.items);
+                return resolve.completeFlagValueWithPrefixFull(allocator, io, current, flag_name, prefix, environ_map, &flag_values, positional_args.items);
             }
         }
         // Multi-char single-dash: could be non-POSIX flag or shorthand series.
         const shorthand_part = value[1..];
         if (shorthand_part.len > 1 and current.findFlag(shorthand_part) != null) {
-            return completeFlagsWithExclusive(allocator, current, value, &consumed_flag_names);
+            return resolve.completeFlagsWithExclusive(allocator, current, value, &consumed_flag_names);
         }
         // Check if any flag has a multi-char shorthand (non-POSIX mode).
-        if (hasNonPosixFlags(current)) {
-            return completeFlagsWithExclusive(allocator, current, value, &consumed_flag_names);
+        if (resolve.hasNonPosixFlags(current)) {
+            return resolve.completeFlagsWithExclusive(allocator, current, value, &consumed_flag_names);
         }
-        return completeShorthandSeriesWithEnv(allocator, io, current, shorthand_part, environ_map);
+        return resolve.completeShorthandSeriesWithEnv(allocator, io, current, shorthand_part, environ_map);
     }
 
     if (dash) {
         if (positional_count < current.completion.dash.len) {
             const pos = current.completion.dash[positional_count];
-            return resolveValuesWithEnv(allocator, io, pos, value, environ_map, &flag_values, positional_args.items);
+            return resolve.resolveValuesWithEnv(allocator, io, pos, value, environ_map, &flag_values, positional_args.items);
         }
         if (current.completion.dashany.len > 0) {
-            return resolveValuesWithEnv(allocator, io, current.completion.dashany, value, environ_map, &flag_values, positional_args.items);
+            return resolve.resolveValuesWithEnv(allocator, io, current.completion.dashany, value, environ_map, &flag_values, positional_args.items);
         }
         // Fall through to positional/positionalany if no dash completions defined
     }
@@ -296,7 +297,7 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
         }
         if (current.completion.positional.len > 0) {
             const pos = current.completion.positional[0];
-            const resolved = try resolveValuesWithEnv(allocator, io, pos, value, environ_map, &flag_values, positional_args.items);
+            const resolved = try resolve.resolveValuesWithEnv(allocator, io, pos, value, environ_map, &flag_values, positional_args.items);
             try candidates.appendSlice(allocator, resolved);
             allocator.free(resolved);
         }
@@ -305,11 +306,11 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
 
     if (positional_count < current.completion.positional.len) {
         const pos = current.completion.positional[positional_count];
-        return resolveValuesWithEnv(allocator, io, pos, value, environ_map, &flag_values, positional_args.items);
+        return resolve.resolveValuesWithEnv(allocator, io, pos, value, environ_map, &flag_values, positional_args.items);
     }
 
     if (current.completion.positionalany.len > 0) {
-        return resolveValuesWithEnv(allocator, io, current.completion.positionalany, value, environ_map, &flag_values, positional_args.items);
+        return resolve.resolveValuesWithEnv(allocator, io, current.completion.positionalany, value, environ_map, &flag_values, positional_args.items);
     }
 
     // Bridge fallback: if no completions found and command has a run field,
@@ -325,258 +326,7 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
 
 /// Resolve a list of raw completion values into candidates.
 /// Static values (no macro) are parsed for tab-separated description/style.
-/// Macro values (starting with `$`) are passed to `action.resolveMacro`.
-fn resolveValues(allocator: std.mem.Allocator, io: std.Io, values: []const []const u8, prefix: []const u8) ![]Candidate {
-    return resolveValuesWithEnv(allocator, io, values, prefix, null, null, &.{});
-}
-
-fn resolveValuesWithEnv(allocator: std.mem.Allocator, io: std.Io, values: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map, flag_values: ?*const std.StringHashMap([]const u8), positional_args: []const []const u8) ![]Candidate {
-    var candidates = std.ArrayList(Candidate).empty;
-    for (values) |v| {
-        if (flag_values) |fv| {
-            const expanded = try expandVariables(allocator, v, fv, positional_args, prefix);
-            defer allocator.free(expanded);
-            if (expanded.len > 0 and expanded[0] == '$') {
-                // Handle $spec inline to avoid error set inference loop
-                if (std.mem.startsWith(u8, expanded, "$spec")) {
-                    const spec_candidates = resolveSpec(allocator, io, expanded, prefix, environ_map);
-                    for (spec_candidates) |c| {
-                        if (std.mem.startsWith(u8, c.value, prefix)) {
-                            try candidates.append(allocator, .{
-                                .value = try allocator.dupe(u8, c.value),
-                                .description = try allocator.dupe(u8, c.description),
-                                .style = try allocator.dupe(u8, c.style),
-                                .nospace = c.nospace,
-                                .tag = try allocator.dupe(u8, c.tag),
-                            });
-                        }
-                    }
-                } else {
-                    const macro_candidates = try action.resolveMacro(allocator, io, expanded, prefix, environ_map);
-                    for (macro_candidates) |c| {
-                        if (std.mem.startsWith(u8, c.value, prefix)) {
-                            try candidates.append(allocator, .{
-                                .value = try allocator.dupe(u8, c.value),
-                                .description = try allocator.dupe(u8, c.description),
-                                .style = try allocator.dupe(u8, c.style),
-                                .nospace = c.nospace,
-                                .tag = try allocator.dupe(u8, c.tag),
-                            });
-                        }
-                    }
-                }
-            } else {
-                const parsed = splitValue(expanded);
-                if (std.mem.startsWith(u8, parsed.value, prefix)) {
-                    try candidates.append(allocator, .{
-                        .value = try allocator.dupe(u8, parsed.value),
-                        .description = try allocator.dupe(u8, parsed.description),
-                        .style = try allocator.dupe(u8, parsed.style),
-                    });
-                }
-            }
-        } else {
-            if (v.len > 0 and v[0] == '$') {
-                if (std.mem.startsWith(u8, v, "$spec")) {
-                    const spec_candidates = resolveSpec(allocator, io, v, prefix, environ_map);
-                    for (spec_candidates) |c| {
-                        if (std.mem.startsWith(u8, c.value, prefix)) {
-                            try candidates.append(allocator, c);
-                        }
-                    }
-                } else {
-                    const macro_candidates = try action.resolveMacro(allocator, io, v, prefix, environ_map);
-                    for (macro_candidates) |c| {
-                        if (std.mem.startsWith(u8, c.value, prefix)) {
-                            try candidates.append(allocator, c);
-                        }
-                    }
-                }
-            } else {
-                const parsed = splitValue(v);
-                if (std.mem.startsWith(u8, parsed.value, prefix)) {
-                    try candidates.append(allocator, .{ .value = parsed.value, .description = parsed.description, .style = parsed.style });
-                }
-            }
-        }
-    }
-    return candidates.toOwnedSlice(allocator);
-}
-
-fn hasNonPosixFlags(cmd: spec.Command) bool {
-    var current = cmd;
-    while (true) {
-        for (current.flags) |f| {
-            if (f.isNonPosix()) return true;
-        }
-        for (current.persistent_flags) |f| {
-            if (f.isNonPosix()) return true;
-        }
-        if (current.parent) |p| {
-            current = p.*;
-        } else {
-            break;
-        }
-    }
-    return false;
-}
-
-fn completeFlags(allocator: std.mem.Allocator, cmd: spec.Command, prefix: []const u8) ![]Candidate {
-    return completeFlagsWithExclusive(allocator, cmd, prefix, null);
-}
-
-fn completeFlagsWithExclusive(allocator: std.mem.Allocator, cmd: spec.Command, prefix: []const u8, consumed_flags: ?*const std.StringHashMap(void)) ![]Candidate {
-    var candidates = std.ArrayList(Candidate).empty;
-
-    var current = cmd;
-    while (true) {
-        for (current.flags) |f| {
-            if (f.hidden) continue;
-            // Skip flags in exclusive groups that already have a consumed member
-            if (consumed_flags) |cf| {
-                if (isFlagExcluded(current, f, cf)) continue;
-            }
-            try addFlagCandidate(allocator, &candidates, f, prefix);
-        }
-        for (current.persistent_flags) |f| {
-            if (f.hidden) continue;
-            if (consumed_flags) |cf| {
-                if (isFlagExcluded(current, f, cf)) continue;
-            }
-            try addFlagCandidate(allocator, &candidates, f, prefix);
-        }
-        if (current.parent) |p| {
-            current = p.*;
-        } else {
-            break;
-        }
-    }
-
-    return candidates.toOwnedSlice(allocator);
-}
-
-/// Check if a flag is in an exclusive group where another member has been consumed.
-fn isFlagExcluded(cmd: spec.Command, f: Flag, consumed_flags: *const std.StringHashMap(void)) bool {
-    for (cmd.exclusive_flags) |group| {
-        for (group) |member| {
-            if (std.mem.eql(u8, member, f.name())) {
-                // This flag is in an exclusive group — check if another member was consumed
-                for (group) |other| {
-                    if (!std.mem.eql(u8, other, f.name()) and consumed_flags.contains(other)) {
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-    return false;
-}
-
-fn addFlagCandidate(allocator: std.mem.Allocator, candidates: *std.ArrayList(Candidate), f: Flag, prefix: []const u8) !void {
-    if (f.longhand.len > 0) {
-        const dash = if (f.name_as_shorthand) "-" else "--";
-        const form = try std.fmt.allocPrint(allocator, "{s}{s}", .{ dash, f.longhand });
-        if (std.mem.startsWith(u8, form, prefix)) {
-            try candidates.append(allocator, .{ .value = form, .description = f.description });
-        } else {
-            allocator.free(form);
-        }
-    }
-    if (f.shorthand.len > 0) {
-        const form = try std.fmt.allocPrint(allocator, "-{s}", .{f.shorthand});
-        if (std.mem.startsWith(u8, form, prefix)) {
-            try candidates.append(allocator, .{ .value = form, .description = f.description });
-        } else {
-            allocator.free(form);
-        }
-    }
-}
-
-fn completeShorthandSeries(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, shorthand_part: []const u8) ![]Candidate {
-    return completeShorthandSeriesWithEnv(allocator, io, cmd, shorthand_part, null);
-}
-
-fn completeShorthandSeriesWithEnv(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, shorthand_part: []const u8, environ_map: ?*const std.process.Environ.Map) ![]Candidate {
-    // Walk the already-typed shorthand chars. All must be valid bool/optarg shorthands.
-    // If any is a non-optarg value flag, the rest would be consumed as its attached value,
-    // so we can't chain further — fall back to completing that flag's value.
-    var j: usize = 0;
-    while (j < shorthand_part.len) : (j += 1) {
-        const ch = shorthand_part[j .. j + 1];
-        if (cmd.findFlag(ch)) |f| {
-            if (f.takes_value and !f.optarg) {
-                // This flag consumes the rest as attached value.
-                // If we're at the last char, complete flag value for this flag.
-                // Otherwise, the rest is the attached value prefix.
-                if (j == shorthand_part.len - 1) {
-                    // Last char is a value flag expecting next arg — complete its value
-                    return completeFlagValue(allocator, io, cmd, f, "", environ_map);
-                }
-                // Rest after this char is the attached value prefix
-                const attached = shorthand_part[j + 1 ..];
-                return completeFlagValueWithPrefix(allocator, io, cmd, f.name(), attached, environ_map);
-            } else if (f.optarg) {
-                // Optarg flag: rest after this char is optional value
-                if (j == shorthand_part.len - 1) {
-                    // At the end — could complete optarg value or more shorthands
-                    break;
-                }
-                // Has more chars after optarg — those are the optarg's value
-                break;
-            }
-            // Bool flag — continue to next char
-        } else {
-            // Unknown shorthand char — no valid completions
-            return &.{};
-        }
-    }
-
-    // All typed chars are valid bool/optarg shorthands.
-    // Offer remaining valid shorthand flags as chaining candidates.
-    // Candidate value is the full typed prefix + new shorthand char.
-    var candidates = std.ArrayList(Candidate).empty;
-
-    var current = cmd;
-    while (true) {
-        for (current.flags) |f| {
-            if (f.hidden or f.shorthand.len == 0) continue;
-            // Skip shorthands already used in the series
-            var already_used = false;
-            for (shorthand_part) |c| {
-                if (f.shorthand.len > 0 and f.shorthand[0] == c) {
-                    already_used = true;
-                    break;
-                }
-            }
-            if (already_used) continue;
-            const form = try std.fmt.allocPrint(allocator, "-{s}{s}", .{ shorthand_part, f.shorthand });
-            try candidates.append(allocator, .{ .value = form, .description = f.description });
-        }
-        for (current.persistent_flags) |f| {
-            if (f.hidden or f.shorthand.len == 0) continue;
-            var already_used = false;
-            for (shorthand_part) |c| {
-                if (f.shorthand.len > 0 and f.shorthand[0] == c) {
-                    already_used = true;
-                    break;
-                }
-            }
-            if (already_used) continue;
-            const form = try std.fmt.allocPrint(allocator, "-{s}{s}", .{ shorthand_part, f.shorthand });
-            try candidates.append(allocator, .{ .value = form, .description = f.description });
-        }
-        if (current.parent) |p| {
-            current = p.*;
-        } else {
-            break;
-        }
-    }
-    return candidates.toOwnedSlice(allocator);
-}
-
-/// Parse "$spec(path)" — delegate completion to another spec file.
-/// Catches all errors to break the circular dependency in error set inference
-/// (resolveSpec → completeWithEnv → resolveValuesWithEnv → action.resolveMacro → resolveSpec).
+/// (resolveSpec → completeWithEnv → resolve.resolveValuesWithEnv → action.resolveMacro → resolveSpec).
 pub fn resolveSpec(allocator: std.mem.Allocator, io: std.Io, macro: []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) []const Candidate {
     if (macro.len < 7 or macro[5] != '(' or macro[macro.len - 1] != ')') return &.{};
     const spec_path = macro[6 .. macro.len - 1];
@@ -662,26 +412,6 @@ fn extractAliasedCommand(run: []const u8) ?[]const u8 {
     while (i < trimmed.len and trimmed[i] != ' ' and trimmed[i] != '\t') : (i += 1) {}
     if (i > 0) return trimmed[0..i];
     return null;
-}
-
-fn completeFlagValue(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, f: Flag, value: []const u8, environ_map: ?*const std.process.Environ.Map) ![]Candidate {
-    const values = cmd.findFlagCompletion(f.name()) orelse return &.{};
-    return resolveValuesWithEnv(allocator, io, values, value, environ_map, null, &.{});
-}
-
-fn completeFlagValueWithPrefix(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, flag_name: []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]Candidate {
-    const values = cmd.findFlagCompletion(flag_name) orelse return &.{};
-    return resolveValuesWithEnv(allocator, io, values, prefix, environ_map, null, &.{});
-}
-
-fn completeFlagValueFull(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, f: Flag, value: []const u8, environ_map: ?*const std.process.Environ.Map, flag_values: *const std.StringHashMap([]const u8), positional_args: []const []const u8) ![]Candidate {
-    const values = cmd.findFlagCompletion(f.name()) orelse return &.{};
-    return resolveValuesWithEnv(allocator, io, values, value, environ_map, flag_values, positional_args);
-}
-
-fn completeFlagValueWithPrefixFull(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, flag_name: []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map, flag_values: *const std.StringHashMap([]const u8), positional_args: []const []const u8) ![]Candidate {
-    const values = cmd.findFlagCompletion(flag_name) orelse return &.{};
-    return resolveValuesWithEnv(allocator, io, values, prefix, environ_map, flag_values, positional_args);
 }
 
 test "complete flag names" {
