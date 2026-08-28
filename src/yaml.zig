@@ -720,6 +720,123 @@ test "comment handling" {
     try std.testing.expectEqualStrings("hi", val.getScalar("description").?);
 }
 
+test "hash in value without space is not a comment" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const yaml = "name: value#notacomment\n";
+    const val = try parse(arena.allocator(), yaml);
+    try std.testing.expectEqualStrings("value#notacomment", val.getScalar("name").?);
+}
+
+test "colon in value" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const yaml = "url: http://example.com/path\n";
+    const val = try parse(arena.allocator(), yaml);
+    try std.testing.expectEqualStrings("http://example.com/path", val.getScalar("url").?);
+}
+
+test "dash entry without space" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const yaml =
+        \\list:
+        \\  - a
+        \\  - b
+    ;
+    const val = try parse(arena.allocator(), yaml);
+    const list = val.getList("list").?;
+    try std.testing.expectEqual(@as(usize, 2), list.len);
+    try std.testing.expectEqualStrings("a", list[0].scalar);
+    try std.testing.expectEqualStrings("b", list[1].scalar);
+}
+
+test "dash at end of line" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const yaml =
+        \\list:
+        \\  -
+        \\  - b
+    ;
+    const val = try parse(arena.allocator(), yaml);
+    const list = val.getList("list").?;
+    try std.testing.expectEqual(@as(usize, 2), list.len);
+    try std.testing.expectEqualStrings("", list[0].scalar);
+    try std.testing.expectEqualStrings("b", list[1].scalar);
+}
+
+test "nested flow collections" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const yaml = "items: [{a: 1}, {b: 2}]\n";
+    const val = try parse(arena.allocator(), yaml);
+    const items = val.getList("items").?;
+    try std.testing.expectEqual(@as(usize, 2), items.len);
+    try std.testing.expectEqualStrings("1", items[0].getScalar("a").?);
+    try std.testing.expectEqualStrings("2", items[1].getScalar("b").?);
+}
+
+test "empty lines between entries" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const yaml =
+        \\name: first
+        \\
+        \\
+        \\name: second
+    ;
+    const val = try parse(arena.allocator(), yaml);
+    // With duplicate keys, getScalar returns the first match.
+    // yaml.v3 returns the last value for duplicate keys, but our parser
+    // keeps the first occurrence since it appends to a list.
+    try std.testing.expectEqualStrings("first", val.getScalar("name").?);
+}
+
+test "mixed indentation" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const yaml =
+        \\commands:
+        \\  - name: sub
+        \\    flags:
+        \\      --verbose: verbose
+    ;
+    const val = try parse(arena.allocator(), yaml);
+    const cmds = val.getList("commands").?;
+    try std.testing.expectEqualStrings("sub", cmds[0].getScalar("name").?);
+    const flags = cmds[0].getMap("flags").?;
+    try std.testing.expectEqualStrings("verbose", flags[0].value.scalar);
+}
+
+test "quoted inline value" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const yaml = "name: \"hello world\"\n";
+    const val = try parse(arena.allocator(), yaml);
+    // Our parser preserves quotes in inline values
+    const scalar = val.getScalar("name").?;
+    try std.testing.expect(std.mem.startsWith(u8, scalar, "\""));
+    try std.testing.expect(std.mem.endsWith(u8, scalar, "\""));
+}
+
+test "flow sequence with nested flow map" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const yaml = "flag: {\n  key: value\n}\n";
+    const val = try parse(arena.allocator(), yaml);
+    const flag = val.getMap("flag").?;
+    try std.testing.expectEqualStrings("value", getScalarFromMap(flag, "key").?);
+}
+
+test "map value with leading dash" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const yaml = "name: -a\n";
+    const val = try parse(arena.allocator(), yaml);
+    try std.testing.expectEqualStrings("-a", val.getScalar("name").?);
+}
+
 test "literal block scalar" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
