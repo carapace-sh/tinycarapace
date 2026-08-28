@@ -920,6 +920,7 @@ fn bridgeCobra(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: 
 }
 
 /// Bridge: bash — run bash completion script with COMP_LINE
+/// Sources bash-completion framework and calls the registered completion function.
 fn bridgeBash(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
     // Build the command line
     var cmdline = std.ArrayList(u8).empty;
@@ -933,7 +934,7 @@ fn bridgeBash(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: [
         try cmdline.appendSlice(allocator, prefix);
     }
 
-    // Run with COMP_LINE and COMP_POINT set
+    // Set COMP_* env vars
     var env = std.process.Environ.Map.init(allocator);
     if (environ_map) |em| {
         var it = em.iterator();
@@ -945,14 +946,34 @@ fn bridgeBash(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: [
     try env.put("COMP_POINT", try std.fmt.allocPrint(allocator, "{d}", .{cmdline.items.len}));
     try env.put("COMP_TYPE", "63");
 
-    // Build the shell script
+    // Build the bash script that discovers and runs the actual completion
+    // Uses bash-completion framework's __load_completion and the registered -F function
     const script = try std.fmt.allocPrint(allocator,
-        "complete -F _carapace_completer {s} 2>/dev/null; _carapace_completer",
-    .{cmd});
+        \\set +o history
+        \\COMP_WORDS=($COMP_LINE)
+        \\if [ "${{COMP_LINE: -1}}" = " " ]; then
+        \\  COMP_WORDS+=("")
+        \\fi
+        \\COMP_CWORD=$((${{#COMP_WORDS[@]}} - 1))
+        \\COMP_POINT=${{#COMP_LINE}}
+        \\[ -f /usr/share/bash-completion/bash_completion ] && source /usr/share/bash-completion/bash_completion
+        \\[ -f /usr/local/share/bash-completion/bash_completion ] && source /usr/local/share/bash-completion/bash_completion
+        \\[ -f /data/data/com.termux/files/usr/share/bash-completion/bash_completion ] && source /data/data/com.termux/files/usr/share/bash-completion/bash_completion
+        \\__load_completion "{s}" 2>/dev/null
+        \\_cf=$(complete -p "{s}" 2>/dev/null | sed -r 's/.* -F ([^ ]+).*/\\1/')
+        \\if [ -n "$_cf" ]; then
+        \\  "$_cf"
+        \\  for i in "${{COMPREPLY[@]}}"; do
+        \\    if [[ -d "$i" && "$i" != */ ]]; then echo "$i/"
+        \\    else echo "$i"
+        \\    fi
+        \\  done
+        \\fi
+    , .{ cmd, cmd });
     defer allocator.free(script);
 
     const result = std.process.run(allocator, io, .{
-        .argv = &.{ "bash", "-c", script },
+        .argv = &.{ "bash", "-i", "-c", script },
         .stdout_limit = .limited(1024 * 64),
         .stderr_limit = .limited(1024),
         .environ_map = &env,
@@ -963,23 +984,11 @@ fn bridgeBash(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: [
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    // Parse bash output: nospace\x01value\n...
     var candidates = std.ArrayList(traverse.Candidate).empty;
     var lines = std.mem.splitScalar(u8, result.stdout, '\n');
-    _ = lines.next(); // skip nospace line
     while (lines.next()) |line| {
         const trimmed = std.mem.trim(u8, line, " \t\r");
         if (trimmed.len == 0) continue;
-        // Parse "value (description)" format
-        if (std.mem.indexOfScalar(u8, trimmed, ' ')) |space| {
-            if (trimmed[space + 1] == '(' and trimmed[trimmed.len - 1] == ')') {
-                try candidates.append(allocator, .{
-                    .value = try allocator.dupe(u8, trimmed[0..space]),
-                    .description = try allocator.dupe(u8, trimmed[space + 2 .. trimmed.len - 1]),
-                });
-                continue;
-            }
-        }
         try candidates.append(allocator, .{ .value = try allocator.dupe(u8, trimmed) });
     }
 
