@@ -9,6 +9,37 @@ const dash = @import("shell/dash.zig");
 const export_shell = @import("shell/export.zig");
 const action = @import("action.zig");
 
+/// Load a spec or return null if not found.
+fn loadSpecOrNull(allocator: std.mem.Allocator, io: std.Io, name: []const u8, environ_map: *const std.process.Environ.Map) !?spec.Command {
+    const specs = try spec.discoverSpecs(io, environ_map, allocator);
+    const spec_info = spec.findSpec(specs, name) orelse return null;
+    const content = std.Io.Dir.cwd().readFileAlloc(io, spec_info.path, allocator, .limited(1024 * 1024)) catch return null;
+    defer allocator.free(content);
+    return spec.loadSpec(allocator, content) catch return null;
+}
+
+/// Build completion candidates, falling back to bridges if no spec is found.
+/// `cmdline_args` includes the command name as the first element (like traverse.complete expects).
+fn completeWithFallback(allocator: std.mem.Allocator, io: std.Io, name: []const u8, cmdline_args: []const []const u8, environ_map: *const std.process.Environ.Map) ![]traverse.Candidate {
+    if (try loadSpecOrNull(allocator, io, name, environ_map)) |cmd| {
+        return try traverse.completeWithEnv(allocator, io, cmd, cmdline_args, environ_map);
+    }
+    // No spec found — try CARAPACE_BRIDGES fallback
+    if (environ_map.get("CARAPACE_BRIDGES")) |bridges| {
+        var bridge_names = std.ArrayList([]const u8).empty;
+        var it = std.mem.splitScalar(u8, bridges, ',');
+        while (it.next()) |b| {
+            const trimmed = std.mem.trim(u8, b, " \t");
+            if (trimmed.len > 0) try bridge_names.append(allocator, trimmed);
+        }
+        // cmdline_args[0] is the command name, rest are consumed args + partial word
+        const consumed_args = if (cmdline_args.len > 2) cmdline_args[1 .. cmdline_args.len - 1] else &.{};
+        const prefix = if (cmdline_args.len > 1) cmdline_args[cmdline_args.len - 1] else "";
+        return try traverse.resolveBridgeFallback(allocator, io, name, consumed_args, prefix, bridge_names.items, environ_map);
+    }
+    return &.{};
+}
+
 /// Execute a command's `run` field.
 /// Supports: alias strings, macro ($(...)), and scripts (#!/...)
 fn runCommand(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, extra_args: *const std.ArrayList([]const u8), environ_map: ?*const std.process.Environ.Map) !u8 {
@@ -224,24 +255,7 @@ pub fn main(init: std.process.Init) !u8 {
             }
         }
 
-        const specs = try spec.discoverSpecs(init.io, init.environ_map, arena.allocator());
-        const spec_info = spec.findSpec(specs, name) orelse {
-            std.debug.print("error: unknown command: {s}\n", .{name});
-            return 1;
-        };
-
-        const content = std.Io.Dir.cwd().readFileAlloc(init.io, spec_info.path, allocator, .limited(1024 * 1024)) catch {
-            std.debug.print("error: cannot read spec file: {s}\n", .{spec_info.path});
-            return 1;
-        };
-        defer allocator.free(content);
-
-        const cmd = spec.loadSpec(arena.allocator(), content) catch |err| {
-            std.debug.print("error: cannot parse spec: {s}\n", .{@errorName(err)});
-            return 1;
-        };
-
-        const candidates = try traverse.completeWithEnv(arena.allocator(), init.io, cmd, cmdline_args.items, init.environ_map);
+        const candidates = try completeWithFallback(arena.allocator(), init.io, name, cmdline_args.items, init.environ_map);
         const out = try export_shell.formatOutput(arena.allocator(), candidates);
         std.Io.File.stdout().writeStreamingAll(init.io, out) catch {};
         return 0;

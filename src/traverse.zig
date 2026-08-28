@@ -315,7 +315,8 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
     // Bridge fallback: if no completions found and command has a run field,
     // try implicit bridges from CARAPACE_BRIDGES
     if (current.run.len > 0 and bridge_names.len > 0) {
-        const bridge_candidates = try resolveBridgeFallback(allocator, io, current.run, args, value, bridge_names, environ_map);
+        const cmd_name = extractAliasedCommand(current.run) orelse return &.{};
+        const bridge_candidates = try resolveBridgeFallback(allocator, io, cmd_name, args, value, bridge_names, environ_map);
         if (bridge_candidates.len > 0) return bridge_candidates;
     }
 
@@ -548,20 +549,14 @@ fn completeShorthandSeriesWithEnv(allocator: std.mem.Allocator, io: std.Io, cmd:
     return candidates.toOwnedSlice(allocator);
 }
 
-/// Try implicit bridge fallback for commands with a `run` field but no completions.
-/// Parses the run field to extract the aliased command, then tries each bridge
-/// from CARAPACE_BRIDGES in order.
-fn resolveBridgeFallback(allocator: std.mem.Allocator, io: std.Io, run: []const u8, args: []const []const u8, value: []const u8, bridge_names: []const []const u8, environ_map: ?*const std.process.Environ.Map) ![]Candidate {
-    // Extract the command name from the run field
-    const cmd_name = extractAliasedCommand(run) orelse return &.{};
+/// Try implicit bridge fallback — tries each bridge from CARAPACE_BRIDGES for the given command.
+/// `args` is the consumed args (no partial word), `prefix` is the partial word being completed.
+pub fn resolveBridgeFallback(allocator: std.mem.Allocator, io: std.Io, cmd_name: []const u8, args: []const []const u8, prefix: []const u8, bridge_names: []const []const u8, environ_map: ?*const std.process.Environ.Map) ![]Candidate {
 
-    // Try each bridge from CARAPACE_BRIDGES (only shell bridges are auto-detectable)
     for (bridge_names) |bridge_name| {
         const trimmed = std.mem.trim(u8, bridge_name, " \t");
         if (trimmed.len == 0) continue;
 
-        // Only shell bridges can be auto-detected via CARAPACE_BRIDGES
-        // Framework bridges (cobra, click, etc.) require explicit $bridge usage
         if (!std.mem.eql(u8, trimmed, "bash") and
             !std.mem.eql(u8, trimmed, "fish") and
             !std.mem.eql(u8, trimmed, "zsh") and
@@ -570,7 +565,6 @@ fn resolveBridgeFallback(allocator: std.mem.Allocator, io: std.Io, run: []const 
             continue;
         }
 
-        // Build the macro string: $bridge.name(cmd, arg1, arg2, value)
         var macro = std.ArrayList(u8).empty;
         try macro.appendSlice(allocator, "$bridge.");
         try macro.appendSlice(allocator, trimmed);
@@ -580,14 +574,9 @@ fn resolveBridgeFallback(allocator: std.mem.Allocator, io: std.Io, run: []const 
             try macro.appendSlice(allocator, ", ");
             try macro.appendSlice(allocator, a);
         }
-        if (value.len > 0) {
-            try macro.appendSlice(allocator, ", ");
-            try macro.appendSlice(allocator, value);
-        }
         try macro.append(allocator, ')');
 
-        // Try to resolve via the bridge
-        const candidates = action.resolveMacro(allocator, io, macro.items, value, environ_map) catch continue;
+        const candidates = action.resolveMacro(allocator, io, macro.items, prefix, environ_map) catch continue;
         if (candidates.len > 0) return candidates;
     }
 
