@@ -555,10 +555,20 @@ fn resolveBridgeFallback(allocator: std.mem.Allocator, io: std.Io, run: []const 
     // Extract the command name from the run field
     const cmd_name = extractAliasedCommand(run) orelse return &.{};
 
-    // Try each bridge from CARAPACE_BRIDGES
+    // Try each bridge from CARAPACE_BRIDGES (only shell bridges are auto-detectable)
     for (bridge_names) |bridge_name| {
         const trimmed = std.mem.trim(u8, bridge_name, " \t");
         if (trimmed.len == 0) continue;
+
+        // Only shell bridges can be auto-detected via CARAPACE_BRIDGES
+        // Framework bridges (cobra, click, etc.) require explicit $bridge usage
+        if (!std.mem.eql(u8, trimmed, "bash") and
+            !std.mem.eql(u8, trimmed, "fish") and
+            !std.mem.eql(u8, trimmed, "zsh") and
+            !std.mem.eql(u8, trimmed, "inshellisense"))
+        {
+            continue;
+        }
 
         // Build the macro string: $bridge.name(cmd, arg1, arg2, value)
         var macro = std.ArrayList(u8).empty;
