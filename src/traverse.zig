@@ -337,16 +337,32 @@ fn resolveValuesWithEnv(allocator: std.mem.Allocator, io: std.Io, values: []cons
             const expanded = try expandVariables(allocator, v, fv, positional_args, prefix);
             defer allocator.free(expanded);
             if (expanded.len > 0 and expanded[0] == '$') {
-                const macro_candidates = try action.resolveMacro(allocator, io, expanded, prefix, environ_map);
-                for (macro_candidates) |c| {
-                    if (std.mem.startsWith(u8, c.value, prefix)) {
-                        try candidates.append(allocator, .{
-                            .value = try allocator.dupe(u8, c.value),
-                            .description = try allocator.dupe(u8, c.description),
-                            .style = try allocator.dupe(u8, c.style),
-                            .nospace = c.nospace,
-                            .tag = try allocator.dupe(u8, c.tag),
-                        });
+                // Handle $spec inline to avoid error set inference loop
+                if (std.mem.startsWith(u8, expanded, "$spec")) {
+                    const spec_candidates = resolveSpec(allocator, io, expanded, prefix, environ_map);
+                    for (spec_candidates) |c| {
+                        if (std.mem.startsWith(u8, c.value, prefix)) {
+                            try candidates.append(allocator, .{
+                                .value = try allocator.dupe(u8, c.value),
+                                .description = try allocator.dupe(u8, c.description),
+                                .style = try allocator.dupe(u8, c.style),
+                                .nospace = c.nospace,
+                                .tag = try allocator.dupe(u8, c.tag),
+                            });
+                        }
+                    }
+                } else {
+                    const macro_candidates = try action.resolveMacro(allocator, io, expanded, prefix, environ_map);
+                    for (macro_candidates) |c| {
+                        if (std.mem.startsWith(u8, c.value, prefix)) {
+                            try candidates.append(allocator, .{
+                                .value = try allocator.dupe(u8, c.value),
+                                .description = try allocator.dupe(u8, c.description),
+                                .style = try allocator.dupe(u8, c.style),
+                                .nospace = c.nospace,
+                                .tag = try allocator.dupe(u8, c.tag),
+                            });
+                        }
                     }
                 }
             } else {
@@ -361,10 +377,19 @@ fn resolveValuesWithEnv(allocator: std.mem.Allocator, io: std.Io, values: []cons
             }
         } else {
             if (v.len > 0 and v[0] == '$') {
-                const macro_candidates = try action.resolveMacro(allocator, io, v, prefix, environ_map);
-                for (macro_candidates) |c| {
-                    if (std.mem.startsWith(u8, c.value, prefix)) {
-                        try candidates.append(allocator, c);
+                if (std.mem.startsWith(u8, v, "$spec")) {
+                    const spec_candidates = resolveSpec(allocator, io, v, prefix, environ_map);
+                    for (spec_candidates) |c| {
+                        if (std.mem.startsWith(u8, c.value, prefix)) {
+                            try candidates.append(allocator, c);
+                        }
+                    }
+                } else {
+                    const macro_candidates = try action.resolveMacro(allocator, io, v, prefix, environ_map);
+                    for (macro_candidates) |c| {
+                        if (std.mem.startsWith(u8, c.value, prefix)) {
+                            try candidates.append(allocator, c);
+                        }
                     }
                 }
             } else {
@@ -547,6 +572,21 @@ fn completeShorthandSeriesWithEnv(allocator: std.mem.Allocator, io: std.Io, cmd:
         }
     }
     return candidates.toOwnedSlice(allocator);
+}
+
+/// Parse "$spec(path)" — delegate completion to another spec file.
+/// Catches all errors to break the circular dependency in error set inference
+/// (resolveSpec → completeWithEnv → resolveValuesWithEnv → action.resolveMacro → resolveSpec).
+pub fn resolveSpec(allocator: std.mem.Allocator, io: std.Io, macro: []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) []const Candidate {
+    if (macro.len < 7 or macro[5] != '(' or macro[macro.len - 1] != ')') return &.{};
+    const spec_path = macro[6 .. macro.len - 1];
+    if (spec_path.len == 0) return &.{};
+
+    const content = std.Io.Dir.cwd().readFileAlloc(io, spec_path, allocator, .limited(1024 * 1024)) catch return &.{};
+    defer allocator.free(content);
+
+    const cmd = @import("spec.zig").loadSpec(allocator, content) catch return &.{};
+    return completeWithEnv(allocator, io, cmd, &.{ spec_path, prefix }, environ_map) catch &.{};
 }
 
 /// Try implicit bridge fallback — tries each bridge from CARAPACE_BRIDGES for the given command.

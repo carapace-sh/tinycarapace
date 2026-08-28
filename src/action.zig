@@ -80,6 +80,23 @@ pub fn resolveMacro(allocator: std.mem.Allocator, io: std.Io, macro: []const u8,
         return try resolveBridge(allocator, io, macro, prefix, environ_map);
     }
 
+    // Handle $spec(path) — delegate to another spec file
+    if (std.mem.startsWith(u8, macro, "$spec")) {
+        const candidates = @import("traverse.zig").resolveSpec(allocator, io, macro, prefix, environ_map);
+        // Copy results since resolveSpec returns borrowed arena memory
+        var result = std.ArrayList(traverse.Candidate).empty;
+        for (candidates) |c| {
+            try result.append(allocator, .{
+                .value = try allocator.dupe(u8, c.value),
+                .description = try allocator.dupe(u8, c.description),
+                .style = try allocator.dupe(u8, c.style),
+                .nospace = c.nospace,
+                .tag = try allocator.dupe(u8, c.tag),
+            });
+        }
+        return result.toOwnedSlice(allocator);
+    }
+
     // Handle bare dollar shorthand: $(cmd) → $sh(cmd)
     if (macro.len >= 3 and macro[0] == '$' and macro[1] == '(' and macro[macro.len - 1] == ')') {
         const command = macro[2 .. macro.len - 1];

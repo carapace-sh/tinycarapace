@@ -15,9 +15,30 @@ pub const Command = struct {
     commands: []Command = &.{},
     completion: Completion = .{},
     run: []const u8 = "",
+    documentation: Documentation = .{},
+    examples: []const Documentation.Example = &.{},
     parent: ?*const Command = null,
 
     pub const Parsing = enum { interspersed, non_interspersed, disabled };
+
+    pub const Documentation = struct {
+        command: []const u8 = "",
+        flag: []const Documentation.FlagDoc = &.{},
+        positional: []const []const u8 = &.{},
+        positionalany: []const u8 = "",
+        dash: []const []const u8 = &.{},
+        dashany: []const u8 = "",
+
+        pub const FlagDoc = struct {
+            name: []const u8,
+            description: []const u8,
+        };
+
+        pub const Example = struct {
+            description: []const u8,
+            command: []const u8,
+        };
+    };
 
     pub const Completion = struct {
         flag: []const FlagCompletion = &.{},
@@ -220,6 +241,24 @@ fn decodeCommandWithParent(allocator: std.mem.Allocator, val: yaml.Value, parent
         cmd_ptr.completion = try decodeCompletion(allocator, comp_val);
     }
 
+    if (val.get("documentation")) |doc_val| {
+        cmd_ptr.documentation = try decodeDocumentation(allocator, doc_val);
+    }
+
+    if (val.getMap("examples")) |examples| {
+        var arr = try allocator.alloc(Command.Documentation.Example, examples.len);
+        for (examples, 0..) |kv, i| {
+            arr[i] = .{
+                .description = kv.key,
+                .command = switch (kv.value) {
+                    .scalar => |s| s,
+                    else => "",
+                },
+            };
+        }
+        cmd_ptr.examples = arr;
+    }
+
     return cmd_ptr.*;
 }
 
@@ -306,6 +345,44 @@ fn decodeCompletion(allocator: std.mem.Allocator, val: yaml.Value) !Command.Comp
     }
 
     return comp;
+}
+
+fn decodeDocumentation(allocator: std.mem.Allocator, val: yaml.Value) !Command.Documentation {
+    var doc = Command.Documentation{};
+
+    if (val.getScalar("command")) |cmd_doc| doc.command = cmd_doc;
+
+    if (val.getMap("flag")) |flag_map| {
+        var arr = try allocator.alloc(Command.Documentation.FlagDoc, flag_map.len);
+        for (flag_map, 0..) |kv, i| {
+            arr[i] = .{
+                .name = kv.key,
+                .description = switch (kv.value) {
+                    .scalar => |s| s,
+                    else => "",
+                },
+            };
+        }
+        doc.flag = arr;
+    }
+
+    if (val.getList("positional")) |pos| {
+        var arr = try allocator.alloc([]const u8, pos.len);
+        for (pos, 0..) |p, i| arr[i] = p.scalar;
+        doc.positional = arr;
+    }
+
+    if (val.getScalar("positionalany")) |pos| doc.positionalany = pos;
+
+    if (val.getList("dash")) |dash| {
+        var arr = try allocator.alloc([]const u8, dash.len);
+        for (dash, 0..) |d, i| arr[i] = d.scalar;
+        doc.dash = arr;
+    }
+
+    if (val.getScalar("dashany")) |dash| doc.dashany = dash;
+
+    return doc;
 }
 
 test "load spec" {

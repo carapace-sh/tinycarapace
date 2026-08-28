@@ -6,6 +6,10 @@ pub fn generateInitScript(allocator: std.mem.Allocator, specs: []const spec.Spec
     var buf: std.ArrayList(u8) = .empty;
     const exe = "carapace-tiny";
 
+    // Note: COMP_WORDBREAKS is exported but not used for re-lexing the command line.
+    // Full carapace re-lexes COMP_LINE using COMP_WORDBREAKS characters as delimiters
+    // to handle cases like --flag=value being split by bash. This is a known limitation
+    // of the current xargs-based approach.
     try buf.print(allocator,
         \\_carapace_completer() {{
         \\  export COMP_LINE
