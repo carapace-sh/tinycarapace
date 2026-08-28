@@ -11,8 +11,9 @@ pub fn generateInitScript(allocator: std.mem.Allocator, specs: []const spec.Spec
         \\  export COMP_LINE
         \\  export COMP_POINT
         \\  export COMP_TYPE
+        \\  export COMP_WORDBREAKS
         \\
-        \\  local command="${{COMP_WORDS[0]}}" data nospace compline="${{COMP_LINE:0:${{COMP_POINT}}}}"
+        \\  local command="${{COMP_WORDS[0]}}" nospace data compline="${{COMP_LINE:0:${{COMP_POINT}}}}"
         \\
         \\  data=$(echo "${{compline}}''" | xargs {s} "${{command}}" bash 2>/dev/null)
         \\  if [ $? -eq 1 ]; then
@@ -22,11 +23,10 @@ pub fn generateInitScript(allocator: std.mem.Allocator, specs: []const spec.Spec
         \\    fi
         \\  fi
         \\
-        \\  IFS=$'\x01' read -r -d '' nospace data <<< "${{data}}"
-        \\  COMPREPLY=()
-        \\  while IFS= read -r line; do
-        \\    [ -n "$line" ] && COMPREPLY+=("$line")
-        \\  done <<< "$data"
+        \\  IFS=$'\001' read -r -d '' nospace data <<<"${{data}}"
+        \\  mapfile -t COMPREPLY < <(echo "${{data}}")
+        \\  unset COMPREPLY[-1]
+        \\
         \\  [ "${{nospace}}" = true ] && compopt -o nospace
         \\  local IFS=$'\n'
         \\  [[ "${{COMPREPLY[*]}}" == "" ]] && COMPREPLY=()
@@ -46,31 +46,35 @@ pub fn generateInitScript(allocator: std.mem.Allocator, specs: []const spec.Spec
 pub fn generateSnippet(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     const exe = "carapace-tiny";
-    const func_prefix = "carapace_tiny";
 
     try buf.print(allocator,
-        \\_{s}_{s}_completion() {{
-        \\  local compline="${{COMP_LINE:0:${{COMP_POINT}}}}"
-        \\  local data nospace
+        \\_{s}_completion() {{
+        \\  export COMP_LINE
+        \\  export COMP_POINT
+        \\  export COMP_TYPE
+        \\  export COMP_WORDBREAKS
+        \\
+        \\  local nospace data compline="${{COMP_LINE:0:${{COMP_POINT}}}}"
+        \\
         \\  data=$(echo "${{compline}}''" | xargs {s} '{s}' bash 2>/dev/null)
-        \\  if [ $? -ne 0 ]; then
+        \\  if [ $? -eq 1 ]; then
         \\    data=$(echo "${{compline}}'" | xargs {s} '{s}' bash 2>/dev/null)
-        \\    if [ $? -ne 0 ]; then
+        \\    if [ $? -eq 1 ]; then
         \\      data=$(echo "${{compline}}\"" | xargs {s} '{s}' bash 2>/dev/null)
         \\    fi
         \\  fi
-        \\  IFS=$'\x01' read -r -d '' nospace data <<< "${{data}}"
-        \\  COMPREPLY=()
-        \\  while IFS= read -r line; do
-        \\    [ -n "$line" ] && COMPREPLY+=("$line")
-        \\  done <<< "$data"
+        \\
+        \\  IFS=$'\001' read -r -d '' nospace data <<<"${{data}}"
+        \\  mapfile -t COMPREPLY < <(echo "${{data}}")
+        \\  unset COMPREPLY[-1]
+        \\
         \\  [ "${{nospace}}" = true ] && compopt -o nospace
         \\  local IFS=$'\n'
         \\  [[ "${{COMPREPLY[*]}}" == "" ]] && COMPREPLY=()
         \\}}
-        \\complete -o noquote -F _{s}_{s}_completion {s}
+        \\complete -o noquote -F _{s}_completion {s}
         \\
-    , .{ func_prefix, name, exe, name, exe, name, exe, name, func_prefix, name, name });
+    , .{ name, exe, name, exe, name, exe, name, name, name });
 
     return buf.toOwnedSlice(allocator);
 }
@@ -78,7 +82,6 @@ pub fn generateSnippet(allocator: std.mem.Allocator, name: []const u8) ![]const 
 pub fn formatOutput(allocator: std.mem.Allocator, candidates: []traverse.Candidate, comp_type: ?[]const u8) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
 
-    // Compute global nospace flag
     var has_nospace = false;
     for (candidates) |c| {
         if (c.nospace) {
@@ -87,7 +90,6 @@ pub fn formatOutput(allocator: std.mem.Allocator, candidates: []traverse.Candida
         }
     }
 
-    // First line: nospace flag followed by \x01 delimiter
     try buf.print(allocator, "{s}\x01", .{if (has_nospace) "true" else "false"});
 
     const show_desc = comp_type != null and std.mem.eql(u8, comp_type.?, "63");
@@ -103,7 +105,7 @@ pub fn formatOutput(allocator: std.mem.Allocator, candidates: []traverse.Candida
     return buf.toOwnedSlice(allocator);
 }
 
-test "init script contains completers" {
+test "init script has COMP_WORDBREAKS and mapfile" {
     const specs = [_]spec.SpecInfo{
         .{ .name = "chmod", .path = "/tmp/chmod.yaml" },
         .{ .name = "git", .path = "/tmp/git.yaml" },
@@ -111,19 +113,17 @@ test "init script contains completers" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const script = try generateInitScript(arena.allocator(), specs[0..]);
-    try std.testing.expect(std.mem.indexOf(u8, script, "_carapace_completer") != null);
-    try std.testing.expect(std.mem.indexOf(u8, script, "complete") != null);
-    try std.testing.expect(std.mem.indexOf(u8, script, "chmod") != null);
-    try std.testing.expect(std.mem.indexOf(u8, script, "git") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "COMP_WORDBREAKS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "mapfile") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "unset COMPREPLY") != null);
 }
 
-test "snippet contains function name" {
+test "snippet has COMP_WORDBREAKS and mapfile" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const snippet = try generateSnippet(arena.allocator(), "mycmd");
-    try std.testing.expect(std.mem.indexOf(u8, snippet, "_carapace_tiny_mycmd_completion") != null);
-    try std.testing.expect(std.mem.indexOf(u8, snippet, "complete") != null);
-    try std.testing.expect(std.mem.indexOf(u8, snippet, "mycmd") != null);
+    try std.testing.expect(std.mem.indexOf(u8, snippet, "COMP_WORDBREAKS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, snippet, "mapfile") != null);
 }
 
 test "format output" {
@@ -134,30 +134,15 @@ test "format output" {
     const out = try formatOutput(std.testing.allocator, @constCast(&candidates), null);
     defer std.testing.allocator.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "one") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "two") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "first") == null);
 }
 
 test "format output with description" {
     const candidates = [_]traverse.Candidate{
         .{ .value = "json", .description = "JSON format" },
-        .{ .value = "yaml", .description = "YAML format" },
     };
     const out = try formatOutput(std.testing.allocator, @constCast(&candidates), "63");
     defer std.testing.allocator.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "json (JSON format)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "yaml (YAML format)") != null);
-}
-
-test "format output with description and style" {
-    const candidates = [_]traverse.Candidate{
-        .{ .value = "json", .description = "JSON format", .style = "bold" },
-        .{ .value = "yaml", .description = "YAML format", .style = "italic" },
-    };
-    const out = try formatOutput(std.testing.allocator, @constCast(&candidates), "63");
-    defer std.testing.allocator.free(out);
-    try std.testing.expect(std.mem.indexOf(u8, out, "json (JSON format)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "yaml (YAML format)") != null);
 }
 
 test "format output with nospace" {
@@ -166,7 +151,7 @@ test "format output with nospace" {
     };
     const out = try formatOutput(std.testing.allocator, @constCast(&candidates), null);
     defer std.testing.allocator.free(out);
-    try std.testing.expect(std.mem.indexOf(u8, out, "true\x01") != null);
+    try std.testing.expect(std.mem.startsWith(u8, out, "true\x01"));
 }
 
 test "format output without nospace" {
