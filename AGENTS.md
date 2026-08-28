@@ -55,9 +55,16 @@ src/
 ├── action.zig     # Macro resolution: static values, shell execs, modifiers, bridges (~800 LOC)
 └── shell/
     ├── bash.zig        # Bash snippet + output formatting
+    ├── bash_ble.zig    # Bash-ble snippet + output formatting
     ├── zsh.zig         # Zsh snippet + output formatting (multi-block format)
     ├── fish.zig        # Fish snippet + output formatting
+    ├── elvish.zig      # Elvish snippet + output formatting (JSON via from-json)
     ├── powershell.zig  # Powershell snippet + output formatting (JSON via ConvertFrom-Json)
+    ├── xonsh.zig       # Xonsh snippet + output formatting
+    ├── oil.zig         # Oil snippet + output formatting
+    ├── tcsh.zig        # Tcsh snippet + output formatting
+    ├── nushell.zig     # Nushell snippet + output formatting (JSON via from json)
+    ├── cmd_clink.zig   # Cmd-clink snippet + output formatting
     └── export.zig      # JSON export format (carapace-compatible)
 ```
 
@@ -81,13 +88,13 @@ provides implicit bridge fallback.
 
 ```
 # Generate init script for all discovered specs
-tinycarapace _carapace [bash|zsh|fish|powershell]
+tinycarapace _carapace [bash|zsh|fish|powershell|elvish|xonsh|oil|tcsh|nushell|bash-ble|cmd-clink]
 
 # Generate completion snippet for a single command
-tinycarapace <name> bash|zsh|fish|powershell
+tinycarapace <name> <shell>
 
 # Get completions (invoked by snippet)
-tinycarapace <name> bash|zsh|fish|powershell <name> <args...>
+tinycarapace <name> <shell> <name> <args...>
 
 # Export completions as JSON (carapace export format)
 tinycarapace <name> export [<args...>]
@@ -100,8 +107,7 @@ tinycarapace <name> run [<args...>]
 
 ## Shell Snippets
 
-All four shell snippets (`bash.zig`, `zsh.zig`, `fish.zig`, `powershell.zig`) must
-match the output of the corresponding Go files in `carapace/internal/shell/`.
+All shell snippets must match the output of the corresponding Go files in `carapace/internal/shell/`.
 
 ### Bash
 - Exports: `COMP_LINE`, `COMP_POINT`, `COMP_TYPE`, `COMP_WORDBREAKS`

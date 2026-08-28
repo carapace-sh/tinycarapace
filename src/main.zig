@@ -5,6 +5,13 @@ const bash = @import("shell/bash.zig");
 const zsh = @import("shell/zsh.zig");
 const fish = @import("shell/fish.zig");
 const powershell = @import("shell/powershell.zig");
+const elvish = @import("shell/elvish.zig");
+const xonsh = @import("shell/xonsh.zig");
+const oil = @import("shell/oil.zig");
+const tcsh = @import("shell/tcsh.zig");
+const nushell = @import("shell/nushell.zig");
+const bash_ble = @import("shell/bash_ble.zig");
+const cmd_clink = @import("shell/cmd_clink.zig");
 const export_shell = @import("shell/export.zig");
 const action = @import("action.zig");
 
@@ -228,6 +235,13 @@ pub fn main(init: std.process.Init) !u8 {
             .{ .name = "zsh", .mod = zsh },
             .{ .name = "fish", .mod = fish },
             .{ .name = "powershell", .mod = powershell },
+            .{ .name = "elvish", .mod = elvish },
+            .{ .name = "xonsh", .mod = xonsh },
+            .{ .name = "oil", .mod = oil },
+            .{ .name = "tcsh", .mod = tcsh },
+            .{ .name = "nushell", .mod = nushell },
+            .{ .name = "bash-ble", .mod = bash_ble },
+            .{ .name = "cmd-clink", .mod = cmd_clink },
         };
         inline for (init_shells) |s| {
             if (std.mem.eql(u8, shell_name, s.name)) {
@@ -266,6 +280,13 @@ pub fn main(init: std.process.Init) !u8 {
         .{ .name = "zsh", .mod = zsh },
         .{ .name = "fish", .mod = fish },
         .{ .name = "powershell", .mod = powershell },
+        .{ .name = "elvish", .mod = elvish },
+        .{ .name = "xonsh", .mod = xonsh },
+        .{ .name = "oil", .mod = oil },
+        .{ .name = "tcsh", .mod = tcsh },
+        .{ .name = "nushell", .mod = nushell },
+        .{ .name = "bash-ble", .mod = bash_ble },
+        .{ .name = "cmd-clink", .mod = cmd_clink },
     };
 
     inline for (shells) |shell| {
@@ -370,6 +391,13 @@ test {
     _ = @import("shell/zsh.zig");
     _ = @import("shell/fish.zig");
     _ = @import("shell/powershell.zig");
+    _ = @import("shell/elvish.zig");
+    _ = @import("shell/xonsh.zig");
+    _ = @import("shell/oil.zig");
+    _ = @import("shell/tcsh.zig");
+    _ = @import("shell/nushell.zig");
+    _ = @import("shell/bash_ble.zig");
+    _ = @import("shell/cmd_clink.zig");
     _ = @import("shell/export.zig");
 }
 

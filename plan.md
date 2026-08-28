@@ -132,14 +132,20 @@ src/
 | zsh | ✅ | ✅ | ✅ (multi-block format) |
 | fish | ✅ | ✅ | ✅ |
 | powershell | ✅ | ✅ | ✅ (JSON via ConvertFrom-Json) |
-| elvish | ❌ | ❌ | ❌ |
+| elvish | ✅ | ✅ | ✅ (JSON via from-json) |
+| xonsh | ✅ | ✅ | ✅ (JSON via RichCompletion) |
+| oil | ✅ | ✅ | ✅ (bash-compatible) |
+| tcsh | ✅ | ✅ | ✅ (tab-separated) |
+| nushell | ✅ | ✅ | ✅ (JSON via from json) |
+| bash-ble | ✅ | ✅ | ✅ (ble/complete/cand/yield) |
+| cmd-clink | ✅ | ✅ | ✅ (tab-separated) |
 
 ### CLI
 | Mode | Status |
 |------|--------|
-| `tinycarapace spec.yaml` (snippet) | ✅ |
-| `tinycarapace spec.yaml _complete bash <name> <args...>` (candidates) | ✅ |
 | `tinycarapace _carapace bash` (init script) | ✅ |
+| `tinycarapace spec.yaml <shell>` (snippet) | ✅ |
+| `tinycarapace spec.yaml <shell> <name> <args...>` (candidates) | ✅ |
 | `tinycarapace spec.yaml export` (shell-agnostic export) | ✅ |
 | `tinycarapace spec.yaml run` (run mode) | ✅ |
 

@@ -44,9 +44,9 @@ zig build -Dtarget=aarch64-linux-musl         # Cross-compile for ARM64
 ## Usage
 
 ```
-tinycarapace _carapace [bash|zsh|fish|powershell]     # Init script for all specs
-tinycarapace <name> [bash|zsh|fish|powershell]          # Snippet for one command
-tinycarapace <name> [bash|zsh|fish|powershell] <name> <args...>  # Completion callback
+tinycarapace _carapace [bash|zsh|fish|powershell|elvish|xonsh|oil|tcsh|nushell|bash-ble|cmd-clink]  # Init script for all specs
+tinycarapace <name> <shell>                                   # Snippet for one command
+tinycarapace <name> <shell> <name> <args...>                  # Completion callback
 tinycarapace <name> export [<args...>]                  # JSON export (carapace format)
 tinycarapace <name> run [<args...>]                     # Execute spec's run field
 ```
@@ -79,7 +79,7 @@ full details.
 |---------|--------|
 | YAML parsing, spec decoding, flag parsing | ✅ |
 | Argument traversal (subcommands, flags, positionals, dash) | ✅ |
-| All shell snippets (bash, zsh, fish, powershell) | ✅ |
+| All shell snippets (bash, zsh, fish, powershell, elvish, xonsh, oil, tcsh, nushell, bash-ble, cmd-clink) | ✅ |
 | Macro system (`$sh`, `$files`, `$directories`, `$executables`, `$message`, `$chdir`, `$list`, `$multiparts`, `$split`, `$bridge.*`) | ✅ |
 | Modifier chains (`$prefix`, `$suffix`, `$nospace`, `$style`, `$tag`, `$filter`, `$retain`, `$shift`, `$split`, `$usage`, `$uid`, `$suppress`) | ✅ |
 | Variable expansion (`${C_ARG0}`, `${C_FLAG_NAME}`, `${C_VALUE}`, `${VAR:-default}`) | ✅ |
