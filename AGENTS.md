@@ -148,16 +148,27 @@ All shell snippets must match the output of the corresponding Go files in `carap
 
 | Bridge | Protocol | Invocation |
 |--------|----------|------------|
-| `cobra` | `cmd __complete <args>` | Cobra's built-in `__complete` command |
-| `bash` | `COMP_LINE` + bash-completion | `bash --rcfile /dev/null -i` sourcing `bash_completion` |
-| `zsh` | `zsh --no-rcs -c <script>` | Third-party zsh-capture-completion script |
-| `fish` | `fish --no-config --command <script>` | `complete --do-complete=<input>` |
-| `carapace` | `cmd _carapace export ""` | JSON export format |
-| `carapace-bin` | `carapace <cmd> export ""` | Carapace binary's export |
-| `argcomplete` | `_ARGCOMPLETE=1` | argcomplete env vars |
-| `click` | `_<CMD>_COMPLETE=zsh_complete` | Click env var |
-| `yargs` | `--get-yargs-completions` | Yargs built-in |
-| `powershell` | `CommandCompletion::CompleteInput()` | pwsh script |
+| `Cobra` | `cmd __complete <args>` | Cobra's built-in `__complete` command |
+| `Bash` | `COMP_LINE` + bash-completion | `bash --rcfile /dev/null -i` sourcing `bash_completion` |
+| `Zsh` | `zsh --no-rcs -c <script>` | Third-party zsh-capture-completion script |
+| `Fish` | `fish --no-config --command <script>` | `complete --do-complete=<input>` |
+| `Carapace` | `cmd _carapace export ""` | JSON export format |
+| `CarapaceBin` | `carapace <cmd> export ""` | Carapace binary's export |
+| `Argcomplete` | `_ARGCOMPLETE=1` | argcomplete env vars |
+| `ArgcompleteV1` | `_ARGCOMPLETE=1` (fd 8/9) | Deprecated argcomplete v1 |
+| `Aws` | `aws_completer` | aws-cli completer |
+| `Clap` | `cmd complete --index ...` | Clap's built-in completion |
+| `Click` | `_<CMD>_COMPLETE=zsh_complete` | Click env var |
+| `Complete` | `COMP_LINE` | posener/complete |
+| `Gcloud` | `argcomplete` | gcloud CLI |
+| `Inshellisense` | `inshellisense complete` | Microsoft inshellisense |
+| `JJ` | `COMPLETE=fish` | Jujutsu VCS |
+| `Kingpin` | `--completion-bash` | alecthomas/kingpin |
+| `Kitten` | `kitten __complete__ json` | kitty terminal |
+| `Powershell` | `CommandCompletion::CompleteInput()` | pwsh script |
+| `Urfavecli` | `--generate-shell-completion` | urfave/cli v2+ |
+| `UrfavecliV1` | `--generate-bash-completion` | urfave/cli v1 |
+| `Yargs` | `--get-yargs-completions` | Yargs built-in |
 
 ### Implicit bridges (`CARAPACE_BRIDGES`)
 

@@ -32,25 +32,47 @@ pub fn resolveBridge(allocator: std.mem.Allocator, io: std.Io, macro: []const u8
     const cmd = cmd_args.items[0];
     const bridge_args = cmd_args.items[1..];
 
-    if (std.mem.eql(u8, bridge_name, "cobra")) {
+    if (std.mem.eql(u8, bridge_name, "Cobra")) {
         return try bridgeCobra(allocator, io, cmd, bridge_args, prefix, environ_map);
-    } else if (std.mem.eql(u8, bridge_name, "bash")) {
+    } else if (std.mem.eql(u8, bridge_name, "Bash")) {
         return try bridgeBash(allocator, io, cmd, bridge_args, prefix, environ_map);
-    } else if (std.mem.eql(u8, bridge_name, "zsh")) {
+    } else if (std.mem.eql(u8, bridge_name, "Zsh")) {
         return try bridgeZsh(allocator, io, cmd, bridge_args, prefix, environ_map);
-    } else if (std.mem.eql(u8, bridge_name, "fish")) {
+    } else if (std.mem.eql(u8, bridge_name, "Fish")) {
         return try bridgeFish(allocator, io, cmd, bridge_args, prefix, environ_map);
-    } else if (std.mem.eql(u8, bridge_name, "carapace")) {
+    } else if (std.mem.eql(u8, bridge_name, "Carapace")) {
         return try bridgeCarapace(allocator, io, cmd, bridge_args, prefix, environ_map);
-    } else if (std.mem.eql(u8, bridge_name, "carapace-bin")) {
+    } else if (std.mem.eql(u8, bridge_name, "CarapaceBin")) {
         return try bridgeCarapaceBin(allocator, io, cmd, bridge_args, prefix, environ_map);
-    } else if (std.mem.eql(u8, bridge_name, "argcomplete")) {
+    } else if (std.mem.eql(u8, bridge_name, "Argcomplete")) {
         return try bridgeArgcomplete(allocator, io, cmd, bridge_args, prefix, environ_map);
-    } else if (std.mem.eql(u8, bridge_name, "click")) {
+    } else if (std.mem.eql(u8, bridge_name, "ArgcompleteV1")) {
+        return try bridgeArgcompleteV1(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "Aws")) {
+        return try bridgeAws(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "Clap")) {
+        return try bridgeClap(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "Click")) {
         return try bridgeClick(allocator, io, cmd, bridge_args, prefix, environ_map);
-    } else if (std.mem.eql(u8, bridge_name, "powershell")) {
+    } else if (std.mem.eql(u8, bridge_name, "Complete")) {
+        return try bridgeComplete(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "Gcloud")) {
+        return try bridgeGcloud(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "Inshellisense")) {
+        return try bridgeInshellisense(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "JJ")) {
+        return try bridgeJJ(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "Kingpin")) {
+        return try bridgeKingpin(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "Kitten")) {
+        return try bridgeKitten(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "Powershell")) {
         return try bridgePowershell(allocator, io, cmd, bridge_args, prefix, environ_map);
-    } else if (std.mem.eql(u8, bridge_name, "yargs")) {
+    } else if (std.mem.eql(u8, bridge_name, "Urfavecli")) {
+        return try bridgeUrfavecli(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "UrfavecliV1")) {
+        return try bridgeUrfavecliV1(allocator, io, cmd, bridge_args, prefix, environ_map);
+    } else if (std.mem.eql(u8, bridge_name, "Yargs")) {
         return try bridgeYargs(allocator, io, cmd, bridge_args, prefix, environ_map);
     }
     return &.{};
@@ -264,6 +286,72 @@ fn bridgeClick(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: 
         if (value_line.len > 0) try candidates.append(allocator, .{ .value = try allocator.dupe(u8, value_line), .description = try allocator.dupe(u8, desc_line) });
     }
     return candidates.toOwnedSlice(allocator);
+}
+
+/// Bridge: argcomplete v1 — deprecated, uses fd 8/9
+fn bridgeArgcompleteV1(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    _ = allocator; _ = io; _ = cmd; _ = args; _ = prefix; _ = environ_map;
+    return &.{};
+}
+
+/// Bridge: aws — run aws_completer
+fn bridgeAws(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    _ = allocator; _ = io; _ = cmd; _ = args; _ = prefix; _ = environ_map;
+    return &.{};
+}
+
+/// Bridge: clap — run `cmd complete --index ...`
+fn bridgeClap(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    _ = allocator; _ = io; _ = cmd; _ = args; _ = prefix; _ = environ_map;
+    return &.{};
+}
+
+/// Bridge: complete — run with COMP_LINE
+fn bridgeComplete(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    _ = allocator; _ = io; _ = cmd; _ = args; _ = prefix; _ = environ_map;
+    return &.{};
+}
+
+/// Bridge: gcloud — run with argcomplete
+fn bridgeGcloud(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    _ = allocator; _ = io; _ = cmd; _ = args; _ = prefix; _ = environ_map;
+    return &.{};
+}
+
+/// Bridge: inshellisense — run `inshellisense complete <input>`
+fn bridgeInshellisense(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    _ = allocator; _ = io; _ = cmd; _ = args; _ = prefix; _ = environ_map;
+    return &.{};
+}
+
+/// Bridge: jj — run with COMPLETE=fish
+fn bridgeJJ(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    _ = allocator; _ = io; _ = cmd; _ = args; _ = prefix; _ = environ_map;
+    return &.{};
+}
+
+/// Bridge: kingpin — run with --completion-bash
+fn bridgeKingpin(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    _ = allocator; _ = io; _ = cmd; _ = args; _ = prefix; _ = environ_map;
+    return &.{};
+}
+
+/// Bridge: kitten — run `kitten __complete__ json`
+fn bridgeKitten(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    _ = allocator; _ = io; _ = cmd; _ = args; _ = prefix; _ = environ_map;
+    return &.{};
+}
+
+/// Bridge: urfavecli — run with --generate-shell-completion
+fn bridgeUrfavecli(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    _ = allocator; _ = io; _ = cmd; _ = args; _ = prefix; _ = environ_map;
+    return &.{};
+}
+
+/// Bridge: urfavecli v1 — run with --generate-bash-completion
+fn bridgeUrfavecliV1(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    _ = allocator; _ = io; _ = cmd; _ = args; _ = prefix; _ = environ_map;
+    return &.{};
 }
 
 /// Bridge: powershell — stub
