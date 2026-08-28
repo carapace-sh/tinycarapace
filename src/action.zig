@@ -973,7 +973,7 @@ fn bridgeBash(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: [
     defer allocator.free(script);
 
     const result = std.process.run(allocator, io, .{
-        .argv = &.{ "bash", "-i", "-c", script },
+        .argv = &.{ "bash", "--rcfile", "/dev/null", "-i", "-c", script },
         .stdout_limit = .limited(1024 * 64),
         .stderr_limit = .limited(1024),
         .environ_map = &env,
