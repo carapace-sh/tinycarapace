@@ -59,11 +59,11 @@ src/
 | `flags` / `persistentflags` | ✅ |
 | `completion.flag` | ✅ |
 | `completion.positional` / `positionalany` | ✅ |
-| `completion.dash` / `dashany` | ❌ |
-| `exclusiveflags` | ❌ |
-| `group` | ❌ |
-| `run` | ❌ Parsed but ignored |
-| `parsing` | ✅ `disabled` and `non-interspersed` |
+| `completion.dash` / `dashany` | ✅ |
+| `exclusiveflags` | ✅ |
+| `group` | ✅ |
+| `run` | ✅ (alias, macro, script modes) |
+| `parsing` | ✅ `disabled`, `non-interspersed`, `interspersed` |
 | `hidden` | ✅ |
 
 ### Flag parsing
@@ -73,7 +73,7 @@ src/
 | `=` (takes value) / `?` (optarg) | ✅ |
 | `*` (repeatable) / `!` (required) / `&` (hidden) | ✅ |
 | Non-POSIX mode (`NameAsShorthand`) | ✅ |
-| `nargs` / `default` extended fields | ❌ |
+| `nargs` / `default` extended fields | ✅ |
 
 ### Traversal engine
 | Feature | Status |
@@ -83,8 +83,10 @@ src/
 | `--` dash disables flag parsing | ✅ |
 | POSIX shorthand chaining (`-abc`) | ✅ |
 | Subcommand + positional[0] batch completion | ✅ |
-| Persistent flags | ⚠️ Not inherited from ancestors |
-| `Context.flag_values` population | ❌ HashMap initialized but never written |
+| Persistent flag inheritance from ancestors | ✅ |
+| Flag value population (`flag_values` HashMap) | ✅ |
+| Non-interspersed parsing | ✅ |
+| Exclusive flags | ✅ |
 | `COMP_WORDBREAKS` re-lexing | ❌ |
 
 ### Macros & actions
@@ -92,12 +94,17 @@ src/
 |---------|--------|
 | Static values (`value`, `value\tdescription`, `value\tdescription\tstyle`) | ✅ |
 | `$sh(cmd)`, `$bash(cmd)`, `$pwsh(cmd)` | ✅ |
-| `$files`, `$directories`, `$executables` | ❌ |
-| `$(cmd)` shorthand for `$sh(cmd)` | ❌ |
-| `$spec(path)` — delegate to another spec | ❌ |
-| `$message(msg)` | ❌ |
-| Shell exec macros for other shells (`$fish`, `$zsh`, `$elvish`, `$nu`, `$osh`, `$xonsh`, `$cmd`) | ❌ Only `$sh`, `$bash`, `$pwsh` |
-| Variable expansion (`${C_ARG0}`, `${C_FLAG_NAME}`, `${C_VALUE}`, `${C_PART0}`) | ❌ |
+| `$zsh(cmd)`, `$fish(cmd)`, `$elvish(cmd)`, `$nu(cmd)`, `$osh(cmd)`, `$xonsh(cmd)`, `$cmd(cmd)` | ✅ |
+| `$files`, `$directories`, `$executables` | ✅ |
+| `$(cmd)` shorthand for `$sh(cmd)` | ✅ |
+| `$spec(path)` — delegate to another spec | ❌ (circular dep) |
+| `$message(msg)` | ✅ |
+| `$chdir(dir)` | ✅ (with special dir macros) |
+| `$list(delim)` / `$uniquelist(delim)` | ✅ |
+| `$multiparts([delim])` | ✅ |
+| `$split` / `$splitp` | ✅ (as modifiers) |
+| Variable expansion (`${C_ARG0}`, `${C_FLAG_NAME}`, `${C_VALUE}`, `${VAR:-default}`) | ✅ |
+| Bridge macros (`$bridge.name(cmd, args...)`) | ✅ (cobra, bash, zsh, fish, carapace, carapace-bin, argcomplete, click, yargs, powershell) |
 
 ### Modifier chains (` ||| ` delimiter)
 | Modifier | Status |
@@ -105,31 +112,28 @@ src/
 | `$prefix(text)` | ✅ |
 | `$suffix(text)` | ✅ |
 | `$nospace(chars)` | ✅ |
+| `$noprefix(chars)` | ✅ |
 | `$style(name)` | ✅ |
 | `$tag(name)` | ✅ |
 | `$filter([vals])` | ✅ |
+| `$filterargs` | ✅ |
 | `$retain([vals])` | ✅ |
-| `$chdir(dir)` | ❌ |
-| `$filterargs` | ❌ |
-| `$list(delim)` | ❌ |
-| `$multiparts([delim])` | ❌ |
-| `$noprefix(chars)` | ❌ |
-| `$shift(n)` | ❌ |
-| `$split` / `$splitp` | ❌ |
-| `$suppress(regex)` | ❌ |
-| `$uid([scheme, host, opts...])` | ❌ |
-| `$uniquelist(delim)` | ❌ |
-| `$usage(usage)` | ❌ |
+| `$shift(n)` | ✅ |
+| `$split` / `$splitp` | ✅ |
+| `$suppress(regex)` | ✅ |
+| `$uid([scheme, host, opts...])` | ✅ |
+| `$uniquelist(delim)` | ✅ (handled by `$list`) |
+| `$usage(usage)` | ✅ |
 
 ### Shell support
 | Shell | Init script | Snippet | Candidate output |
 |-------|-------------|---------|------------------|
 | bash | ✅ | ✅ | ✅ |
-| zsh | ❌ | ❌ | ❌ |
-| fish | ❌ | ❌ | ❌ |
-| powershell | ❌ | ❌ | ❌ |
+| zsh | ✅ | ✅ | ✅ (multi-block format) |
+| fish | ✅ | ✅ | ✅ |
+| powershell | ✅ | ✅ | ✅ (JSON via ConvertFrom-Json) |
 | elvish | ❌ | ❌ | ❌ |
-| Dash readline (stretch) | ❌ | ❌ | ❌ |
+| Dash readline (stretch) | ✅ | ✅ | ✅ (`--dash-repl`) |
 
 ### CLI
 | Mode | Status |
@@ -138,7 +142,8 @@ src/
 | `tinycarapace spec.yaml _complete bash <name> <args...>` (candidates) | ✅ |
 | `tinycarapace _carapace bash` (init script) | ✅ |
 | `tinycarapace spec.yaml export` (shell-agnostic export) | ✅ |
-| `tinycarapace spec.yaml run` (run mode) | ❌ |
+| `tinycarapace spec.yaml run` (run mode) | ✅ |
+| `tinycarapace spec.yaml --dash-repl` | ✅ |
 
 ### Bash snippet features
 | Feature | Status |
@@ -147,8 +152,8 @@ src/
 | Three-stage open-quote retry (empty, single, double) | ✅ |
 | Nospace flag (`\x01` delimiter) | ✅ |
 | Descriptions on `COMP_TYPE == 63` | ✅ |
-| Portable `while read` loop (no `mapfile`) | ✅ |
-| `xargs --` for safe argument passing | ✅ |
+| `mapfile` + `unset COMPREPLY[-1]` | ✅ |
+| `COMP_WORDBREAKS` export | ✅ |
 
 ---
 

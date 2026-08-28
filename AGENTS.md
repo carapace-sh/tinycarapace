@@ -1,15 +1,38 @@
-# carapace-tiny — Agent Guide
+# tinycarapace — Agent Guide
 
-A minimal [carapace-spec](https://github.com/carapace-sh/carapace-spec) interpreter in Zig for resource-constrained environments (docker containers, alpine, scratch images). It reads the standard YAML spec format and generates shell completion — primarily bash.
+A minimal [carapace-spec](https://github.com/carapace-sh/carapace-spec) interpreter
+in Zig for resource-constrained environments (docker containers, alpine, scratch
+images). It reads the standard YAML spec format and provides shell completion.
 
-**Language**: Zig 0.16.0 (min 0.15.0) — all tests pass with `zig build test`
+**Language**: Zig 0.16.0+ (min 0.15.0). **Tests**: `zig build test`
+
+---
+
+## Source of Truth
+
+**The Go-based carapace ecosystem is the source of truth.** This project is an
+AI-generated port and should adapt to upstream changes. The key reference
+projects are:
+
+| Project | Role | What to verify against |
+|---------|------|----------------------|
+| [carapace](https://github.com/carapace-sh/carapace) | Core framework | Shell snippets, traversal engine, export format, `_carapace` protocol |
+| [carapace-spec](https://github.com/carapace-sh/carapace-spec) | Spec format | `Command`/`Flag` structs, YAML fields, macro names, `run` semantics |
+| [carapace-bridge](https://github.com/carapace-sh/carapace-bridge) | Bridge system | `bash.sh`, `bash.go`, `zsh.go`, `fish.go`, bridge dispatch, `CARAPACE_BRIDGES` |
+| [carapace-bin](https://github.com/carapace-sh/carapace-bin) | Reference impl | `carapace _carapace export` protocol, CLI interface |
+
+When in doubt, check the Go implementation first — it is well-tested and
+represents the correct behavior. This project targets a **reduced feature set**
+but must be **consistent** with upstream for the features it implements.
+
+---
 
 ## Essential Commands
 
 ```bash
-zig build              # Build (outputs to zig-out/bin/carapace-tiny)
-zig build test         # Run all tests (no output = success)
-zig build -Doptimize=ReleaseFast  # Release build (strip with zig build && strip zig-out/bin/carapace-tiny)
+zig build                                    # Build (zig-out/bin/carapace-tiny)
+zig build test                                # Run all tests (no output = success)
+zig build -Doptimize=ReleaseFast && strip zig-out/bin/carapace-tiny  # Release
 ```
 
 Cross-compile (no extra toolchain needed):
@@ -18,76 +41,161 @@ zig build -Dtarget=x86_64-linux-musl
 zig build -Dtarget=aarch64-linux-musl
 ```
 
-## Source Layout (~1511 LOC)
+---
+
+## Source Layout (~5100 LOC)
 
 ```
 src/
-├── main.zig       # CLI entry: `_carapace` (init) or `<name> bash` (snippet/completions)
-├── spec.zig       # Command/Flag/Completion types + YAML → struct decode + SpecInfo/discovery
+├── main.zig       # CLI entry: _carapace, bash/zsh/fish/powershell, run, export, --dash-repl
+├── spec.zig       # Command/Flag/Completion types + YAML decode + SpecInfo discovery
 ├── yaml.zig       # ~676 LOC hand-written YAML subset parser (recursive descent, no deps)
 ├── flag.zig       # Flag string parser (compact syntax: --optarg?=, --repeatable*, --hidden&)
 ├── traverse.zig   # Argument traversal state machine (the core completion engine)
-├── action.zig     # Macro resolution stub (currently only returns static values, no macros)
+├── action.zig     # Macro resolution: static values, shell execs, modifiers, bridges (~800 LOC)
 └── shell/
-    ├── bash.zig   # Init script, snippet generation + output formatting
-    └── export.zig # JSON export format (carapace-compatible)
+    ├── bash.zig        # Bash snippet + output formatting
+    ├── zsh.zig         # Zsh snippet + output formatting (multi-block format)
+    ├── fish.zig        # Fish snippet + output formatting
+    ├── powershell.zig  # Powershell snippet + output formatting (JSON via ConvertFrom-Json)
+    ├── dash.zig        # Raw-mode interactive REPL for dash (--dash-repl)
+    └── export.zig      # JSON export format (carapace-compatible)
 ```
+
+---
 
 ## Architecture
 
-1. **YAML parsing** (`yaml.zig`) → tagged union tree (`Value.{scalar, list, map}`)
-2. **Spec decoding** (`spec.zig`) → typed `Command` structs with `Flag`, `Completion`
-3. **Traversal** (`traverse.zig`) → walk CLI args, classify tokens, decide what to complete
-4. **Output** (`shell/bash.zig`, `shell/export.zig`) → format candidates or generate bash `complete -F` snippet
+```
+spec.yaml → yaml.zig (parse) → spec.zig (decode) → traverse.zig (complete)
+    → shell/*.zig (format output)
+    ↕ fallback
+    → action.zig (macros, bridges, $files, $sh, $chdir, $bridge.*)
+```
 
-```
-CARAPACE_SPECS / ~/.config/carapace/specs/ /etc/carapace/specs/
-    → spec.zig (discover) → bash.zig (init snippet) → bash compgen
-                       ↓
-                    yaml.zig (parse) → spec.zig (decode) → traverse.zig (complete) → bash.zig (format)
-                                                                                  └→ export.zig (JSON)
-```
+For commands without a spec file, `CARAPACE_BRIDGES` (bash/fish/zsh/inshellisense)
+provides implicit bridge fallback.
+
+---
 
 ## CLI Interface
 
-```bash
-# Generate bash init script for all specs in CARAPACE_SPECS env var
-# (source this to register all completers)
-carapace-tiny _carapace [bash]
+```
+# Generate init script for all discovered specs
+tinycarapace _carapace [bash|zsh|fish|powershell]
 
-# Generate bash completion snippet for a single command
-# (source this to register one completer)
-carapace-tiny <name> bash
+# Generate completion snippet for a single command
+tinycarapace <name> bash|zsh|fish|powershell
 
-# Completion callback — invoked by the bash snippet
-# Provides completions for the given command's spec
-carapace-tiny <name> bash <name> <args...>
+# Get completions (invoked by snippet)
+tinycarapace <name> bash|zsh|fish|powershell <name> <args...>
 
 # Export completions as JSON (carapace export format)
-# Useful for debugging or external tooling
-carapace-tiny <name> export [<name> <args...>]
+tinycarapace <name> export [<args...>]
+
+# Execute the spec's run field
+tinycarapace <name> run [<args...>]
+
+# Interactive REPL with completion (dash/raw mode)
+tinycarapace <name> --dash-repl
 ```
 
-The `CARAPACE_SPECS` environment variable is a colon-separated list of `name=path` pairs that overrides directory-based discovery. By default, specs are loaded from:
+---
 
-- `$XDG_CONFIG_HOME/carapace/specs/` or `~/.config/carapace/specs/`
-- `/etc/carapace/specs/`
+## Shell Snippets
+
+All four shell snippets (`bash.zig`, `zsh.zig`, `fish.zig`, `powershell.zig`) must
+match the output of the corresponding Go files in `carapace/internal/shell/`.
+
+### Bash
+- Exports: `COMP_LINE`, `COMP_POINT`, `COMP_TYPE`, `COMP_WORDBREAKS`
+- Output: `mapfile -t COMPREPLY < <(echo "${data}")` + `unset COMPREPLY[-1]`
+- Three-stage open-quote retry (empty `''`, single `'`, double `"`)
+- `[[ "${COMPREPLY[*]}" == "" ]] && COMPREPLY=()` — fix for mapfile creating non-empty array from empty output
+- Function name: `_<name>_completion` (single), `_carapace_completer` (init)
+- Init script: `complete -o noquote -F _carapace_completer <names...>`
+
+### Zsh
+- `#compdef <names>` header
+- Multi-block output format: `\x01` (nospace/message), `\x02` (block separator), `\x03` (tag/displays/values separator), `\x04` (array terminator)
+- `CARAPACE_COMPLINE` env var passed to xargs
+- `compstate[insert]=menu` for nospace support
+- `compquote '' 2>/dev/null && _<name>_completion` for pre-GNU compdef compat
+- Blocks: `tag\x03displays\x04\x03values\x04\x02`
+
+### Fish
+- `function _<name>_completion` with `set --local data`
+- `IFS='' set data (echo (commandline -cp)'' | sed "s/ $/ ''/" | xargs ...)`
+- `sed "s/ $/ ''/"` — handles trailing space (empty word being completed)
+- `complete -e '<name>'` — erase existing completions before registering
+- `complete -c '<name>' -f -a '(_<name>_completion)' -r`
+
+### Powershell
+- Uses `$commandAst.CommandElements` and `$cursorPosition` (not `$words`)
+- `$_.Extent.StartOffset` / `$_.Extent.EndOffset` for cursor position tracking
+- Strips surrounding single quotes from elements
+- Output via `ConvertFrom-Json` (powershell format output = JSON export format)
+- `[CompletionResult]::new($_.CompletionText, $_.ListItemText, ...)`
+- `Register-ArgumentCompleter -Native -ScriptBlock (Get-Item "Function:_<name>_completion").ScriptBlock`
+
+---
+
+## Bridges
+
+### Supported bridge macros (`$bridge.<name>(cmd, args...)`)
+
+| Bridge | Protocol | Invocation |
+|--------|----------|------------|
+| `cobra` | `cmd __complete <args>` | Cobra's built-in `__complete` command |
+| `bash` | `COMP_LINE` + bash-completion | `bash --rcfile /dev/null -i` sourcing `bash_completion` |
+| `zsh` | `zsh --no-rcs -c <script>` | Third-party zsh-capture-completion script |
+| `fish` | `fish --no-config --command <script>` | `complete --do-complete=<input>` |
+| `carapace` | `cmd _carapace export ""` | JSON export format |
+| `carapace-bin` | `carapace <cmd> export ""` | Carapace binary's export |
+| `argcomplete` | `_ARGCOMPLETE=1` | argcomplete env vars |
+| `click` | `_<CMD>_COMPLETE=zsh_complete` | Click env var |
+| `yargs` | `--get-yargs-completions` | Yargs built-in |
+| `powershell` | `CommandCompletion::CompleteInput()` | pwsh script |
+
+### Implicit bridges (`CARAPACE_BRIDGES`)
+
+Only shell bridges are auto-detectable: `bash`, `fish`, `zsh`, `inshellisense`.
+Framework bridges (cobra, click, etc.) require explicit `$bridge.name()` usage.
+
+The bash bridge script must match `carapace-bridge/pkg/actions/bridge/bash.sh`:
+- `set +o history`
+- Set `COMP_WORDS`, `COMP_CWORD`, `COMP_POINT` from `COMP_LINE`
+- Source `bash_completion` from known paths
+- Call `__load_completion` to register the completion
+- Extract function name via `complete -p <cmd> | sed -r 's/.* -F ([^ ]+).*/\1/'`
+- Iterate `COMPREPLY`, append `/` to directories
+
+---
 
 ## Key Patterns & Gotchas
 
 ### Zig 0.16.x APIs
 
-This codebase uses the **new Zig 0.16 I/O API** (`std.process.Init`, `std.Io`, `init.minimal.args.vector`, `init.environ_map.get`, `init.io`, `std.Io.Dir.readFileAlloc`, `std.Io.File.stdout().writeStreamingAll`). These are **not** the Zig 0.11-0.13 allocator/fs APIs. If you see `std.io`, `std.fs.cwd()`, or `args.processAlloc` — those are the wrong version.
+This codebase uses the **new Zig 0.16 I/O API** (`std.process.Init`, `std.Io`,
+`init.minimal.args.vector`, `init.environ_map.get`, `init.io`,
+`std.Io.Dir.readFileAlloc`, `std.Io.File.stdout().writeStreamingAll`). These are
+**not** the Zig 0.11-0.13 allocator/fs APIs. If you see `std.io`, `std.fs.cwd()`,
+or `args.processAlloc` — those are the wrong version.
 
 ### Memory Management
 
-- **Arena per completion invocation** in `main.zig` (line 62-63)
-- Inside `loadSpec()`, a **second ArenaAllocator** is created (line 75) — the caller's arena is only used indirectly. This is a nested arena pattern: the inner arena is freed by `defer arena.deinit()` in `loadSpec`, but the returned `Command` struct borrows from it. The caller's arena keeps the result alive.
-- `std.ArrayList(T).empty` is used instead of `std.ArrayList(T).init(allocator)` — this is `@TypeOf(.empty)` pattern where the allocator is passed separately to `append()`.
+- **One `ArenaAllocator` per completion invocation** in `main.zig`
+- Inside `loadSpec()`, a **second ArenaAllocator** is created — the caller's
+  arena is only used indirectly. The inner arena is freed by `defer arena.deinit()`
+  in `loadSpec`, but the returned `Command` struct borrows from it. The caller's
+  arena keeps the result alive.
+- `std.ArrayList(T).empty` is used instead of `std.ArrayList(T).init(allocator)`
+  — allocator passed separately to `append()`.
 
 ### YAML Parser Limitations
 
-- Only handles the carapace-spec subset: maps, block lists, flow sequences (`[a, b]`), flow maps (`{k: v}`)
+- Only handles the carapace-spec subset: maps, block lists, flow sequences
+  (`[a, b]`), flow maps (`{k: v}`)
 - No anchors, aliases, multi-document, or complex tags
 - Indentation-based blocks only (no tabs)
 - `#` comments supported (inline and line-level)
@@ -105,15 +213,29 @@ Parsed in `flag.zig:parseFlag()`. Suffix characters on the flag name:
 
 Examples: `--output=`, `--optarg?=`, `--repeatable*`, `-v`, `-o, --output=`
 
-### Traversal Engine (`traverse.zig:complete()`)
+Extended notation (object form) supports `nargs` and `default`:
+```yaml
+--nargs-two=: {description: consumes two args, nargs: 2}
+--default-val=: {description: flag with default, default: /tmp/out.txt}
+```
+
+### Traversal Engine (`traverse.zig:completeWithEnv`)
 
 - Skips first arg (command name)
 - Classifies each arg: flag value → dash → flag → subcommand → positional
 - `--` disables flag parsing for remaining args
 - `parsing: disabled` on a subcommand also disables flag parsing
-- **Persistent flags are NOT inherited from ancestors** — only searched on the current command via `cmd.findFlag()`. The `findFlag` method checks both `cmd.flags` and `cmd.persistent_flags`, but there's no walk up the tree.
-- When a subcommand is entered, `positional_count` resets to 0 (line 81-82)
-- Completion candidates are filtered by `std.mem.startsWith(u8, candidate, value)` — prefix matching only
+- `parsing: non-interspersed` stops flag parsing after first positional
+- **Persistent flags ARE inherited from ancestors** — `findFlag()` walks up the
+  parent chain via `cmd.parent`
+- **Exclusive flags** — consumed flag groups exclude their members from completion
+- **Variable expansion** — `${C_ARG0}`, `${C_FLAG_NAME}`, `${C_VALUE}` with
+  `${VAR:-default}` syntax
+- **Bridge fallback** — when a spec has a `run` field and no completions,
+  `CARAPACE_BRIDGES` bridges are tried on the aliased command
+- When a subcommand is entered, `positional_count` resets to 0
+- Completion candidates are filtered by `std.mem.startsWith(u8, candidate, value)`
+  — prefix matching only
 
 ### Completion Decision Tree (last arg)
 
@@ -121,50 +243,88 @@ Examples: `--output=`, `--optarg?=`, `--repeatable*`, `-v`, `-o, --output=`
 |---|---|
 | `in_flag` is set | `completion.flag[flag.name]` |
 | Last arg is `--flag=value` | `completion.flag[flag.name]`, filtered by prefix after `=` |
-| Last arg starts with `-` | All non-hidden flags of current command (+ persistent flags) |
+| Last arg starts with `-` | All non-hidden flags of current command (+ persistent flags, minus exclusive groups) |
+| `dash` is true | `completion.dash[positional_count]` / `dashany` |
 | Has subcommands + no positionals consumed | Subcommand names **+** `completion.positional[0]` (batch) |
 | `positional_count < positional.len` | `completion.positional[positional_count]` |
 | Otherwise | `completion.positionalany` |
+| No completions + `run` field | Bridge fallback from `CARAPACE_BRIDGES` |
 
-### Action/Macro System (`action.zig`)
+### Macro System (`action.zig`)
 
-**Currently a stub** — `resolveMacro()` only handles static values (no `$sh(...)`, `$files(...)`, etc.). The traverse engine does NOT call `resolveMacro` at all — it only uses static completion values from the spec. Macro resolution is not wired up yet.
+Supports:
+- **Static values**: `value`, `value\tdescription`, `value\tdescription\tstyle`
+- **Shell exec macros**: `$sh(cmd)`, `$bash(cmd)`, `$zsh(cmd)`, `$fish(cmd)`,
+  `$elvish(cmd)`, `$nu(cmd)`, `$osh(cmd)`, `$xonsh(cmd)`, `$cmd(cmd)`, `$pwsh(cmd)`
+- **Bare dollar shorthand**: `$(cmd)` → `$sh(cmd)`
+- **Built-in macros**: `$files`, `$directories`, `$executables`, `$message(msg)`
+- **List macros**: `$list(delim)`, `$uniquelist(delim)`, `$multiparts([delim])`
+- **Directory macro**: `$chdir(dir)` with `$userhomedir`, `$tempdir`,
+  `$xdgconfighome`, `$xdgcachehome`, `$gitdir`, `$gitworktree`, `$parent([file, dir])`
+- **Split macros**: `$split(delim)`, `$splitp(delim)`
+- **Bridge macros**: `$bridge.name(cmd, args...)`
+- **Modifier chains**: `base ||| $prefix(...) ||| $suffix(...) ||| ...`
+- **Modifiers**: `$prefix`, `$suffix`, `$nospace`, `$noprefix`, `$style`, `$tag`,
+  `$filter`, `$filterargs`, `$retain`, `$shift`, `$suppress`, `$usage`, `$uid`,
+  `$split`, `$splitp`
 
-### Bash Snippet
+### Bash Snippet Details
 
-- **Init script** (`_carapace`): function name `_carapace_completer`, registers all specs from `CARAPACE_SPECS` via `complete -o noquote -F _carapace_completer <name>...`
-- **Single spec** (`<name> bash`): function name `_carapace_tiny_<name>_completion`, registers one command
-- Both use `xargs --` to pass the command line safely
-- Three-stage open-quote retry (single quotes, then double quotes, then none)
-- `complete -o noquote -F` — no `-o nospace` (POC always appends space)
+- Function name: `_<name>_completion` (single), `_carapace_completer` (init)
+- Uses `xargs --` to pass the command line safely
+- Three-stage open-quote retry (empty `''`, single `'`, double `"`)
+- `complete -o noquote -F` — no `-o nospace`
+- `mapfile -t COMPREPLY < <(echo "${data}")` + `unset COMPREPLY[-1]`
+- `[[ "${COMPREPLY[*]}" == "" ]] && COMPREPLY=()` — fix for mapfile
 - Descriptions shown only when `COMP_TYPE` is `63` (successive tab)
-- Uses `while read` loop (portable, works in bash 3.x)
+- `\x01`-delimited nospace flag on first line of output
 
 ### Testing
 
 - All tests are inline in source files using `std.testing.*`
 - Arena allocator pattern: `var arena = std.heap.ArenaAllocator.init(std.testing.allocator); defer arena.deinit();`
 - Tests call completion functions directly with parsed specs (no subprocess)
-- Tests are in: `yaml.zig` (10 tests), `flag.zig` (6 tests), `spec.zig` (1 test), `traverse.zig` (4 tests), `bash.zig` (4 tests), `main.zig` (1 test — just imports)
 - `zig build test` exits with code 0 on success, errors on failure
+- Test file: `src/main.zig` imports all modules (each has inline tests)
 
 ### Non-Obvious
 
-- **`@constCast`** is used in `bash.zig:formatOutput` test (line 69) to pass a const slice to a function expecting a mutable parameter — this is a test-only pattern
-- **No `std.log` or debug logging** — uses `std.debug.print` for error messages only
-- **No `COMP_WORDBREAKS` handling** — unlike full carapace, there's no re-lexing of the command line
-- **No nospace support** — all candidates get a trailing space from bash
-- **No `mapfile`** in the bash snippet — uses portable `while read` loop instead
-- **`plan.md`** is the design document — contains the full spec, architecture decisions, and stretch goals (dash readline, zsh/fish support, modifiers)
-- **`example/example.yaml`** is a test spec with flags, subcommands, and completion values — use it for manual testing
-- The `build.zig.zon` has `minimum_zig_version = "0.15.0"` but the code uses Zig 0.16.0 APIs — update this if adding new APIs
+- **`@constCast`** is used in test code to pass a const slice to a function
+  expecting a mutable parameter — test-only pattern
+- **No `std.log` or debug logging** — uses `std.debug.print` for error messages
+- **No `COMP_WORDBREAKS` re-lexing** — unlike full carapace, there's no re-lexing
+  of the command line with `COMP_WORDBREAKS` characters
+- **`plan.md`** is the design document — contains spec, architecture decisions,
+  and implementation phases
+- **`example/example.yaml`** is a test spec with flags, subcommands, and
+  completion values — use it for manual testing
+- The `build.zig.zon` has `minimum_zig_version = "0.15.0"` but the code uses
+  Zig 0.16.0 APIs — update this if adding new APIs
+- **`expandVariables`** in `traverse.zig` supports `${C_VALUE}`, `${C_ARG0}`,
+  `${C_FLAG_NAME}`, and `${VAR:-default}` — used in `run` mode and completion
+  value templates
+- **`resolveBridgeFallback`** in `traverse.zig` is public — called from `main.zig`
+  when no spec file is found for a command
+- The `run` field supports three modes: script (`#!`), macro (`$(`), and alias
+  (`[json, array]` or plain string)
+
+---
 
 ## Phase Status
 
 From `plan.md`:
 
-- **Phase 1 (Core + bash)**: ✅ Complete — YAML parser, spec decode, flag parsing, traversal, bash snippet
-- **Phase 2 (Dash readline)**: ❌ Not started — `src/shell/dash.zig` doesn't exist
-- **Phase 3 (Polish)**: ❌ Not started — no zsh/fish, no nospace, no modifiers, no `$spec()` macro
+- **Phase 1 (Core + bash)**: ✅ Complete
+- **Phase 2 (Core improvements)**: ✅ dash/dashany, persistent flags, flag values, `$files/$directories/$executables`, `$(cmd)`
+- **Phase 3 (Extended macros)**: ✅ All modifiers, `$message`, `$list`, `$multiparts`, `$chdir`, `$split`, `$splitp`, `$bridge.*`
+- **Phase 4 (Shell support)**: ✅ Bash, zsh, fish, powershell (all with upstream-compatible output formats)
+- **Phase 5 (Variable expansion & run mode)**: ✅ Variable expansion, `run` mode, `non-interspersed`, `exclusiveflags`, `group`, `nargs`
+- **Phase 6 (Dash readline)**: ✅ Raw-mode REPL with TAB completion
 
-Notable: `action.zig` (macro resolution) is listed as Phase 1 but is a stub. The `$sh(...)`, `$bash(...)`, `$files(...)`, `$directories(...)`, `$executables(...)` macros are not implemented.
+### Not implemented (deferred)
+
+- `$spec(path)` macro — circular dependency (action → traverse → action)
+- `$split`/`$splitp` as standalone macros (only as modifiers)
+- `COMP_WORDBREAKS` re-lexing in bash snippet
+- `documentation` and `examples` spec fields
+- elvish/shell discovery for bridges
