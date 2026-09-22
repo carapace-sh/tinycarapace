@@ -357,7 +357,10 @@ pub fn resolveBridgeFallback(allocator: std.mem.Allocator, io: std.Io, cmd_name:
 
         var macro = std.ArrayList(u8).empty;
         try macro.appendSlice(allocator, "$bridge.");
-        try macro.appendSlice(allocator, trimmed);
+        // Bridge dispatch uses PascalCase names (Fish, Bash, Zsh, Inshellisense)
+        // while CARAPACE_BRIDGES values are lowercase.
+        try macro.append(allocator, trimmed[0] - ('a' - 'A'));
+        try macro.appendSlice(allocator, trimmed[1..]);
         try macro.append(allocator, '(');
         try macro.appendSlice(allocator, cmd_name);
         for (args) |a| {
