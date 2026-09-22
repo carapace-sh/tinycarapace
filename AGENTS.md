@@ -55,16 +55,9 @@ src/
 ├── action.zig     # Macro resolution: static values, shell execs, modifiers, bridges (~800 LOC)
 └── shell/
     ├── bash.zig        # Bash snippet + output formatting
-    ├── bash_ble.zig    # Bash-ble snippet + output formatting
     ├── zsh.zig         # Zsh snippet + output formatting (multi-block format)
     ├── fish.zig        # Fish snippet + output formatting
-    ├── elvish.zig      # Elvish snippet + output formatting (JSON via from-json)
     ├── powershell.zig  # Powershell snippet + output formatting (JSON via ConvertFrom-Json)
-    ├── xonsh.zig       # Xonsh snippet + output formatting
-    ├── oil.zig         # Oil snippet + output formatting
-    ├── tcsh.zig        # Tcsh snippet + output formatting
-    ├── nushell.zig     # Nushell snippet + output formatting (JSON via from json)
-    ├── cmd_clink.zig   # Cmd-clink snippet + output formatting
     └── export.zig      # JSON export format (carapace-compatible)
 ```
 
@@ -88,7 +81,7 @@ provides implicit bridge fallback.
 
 ```
 # Generate init script for all discovered specs
-tinycarapace _carapace [bash|zsh|fish|powershell|elvish|xonsh|oil|tcsh|nushell|bash-ble|cmd-clink]
+tinycarapace _carapace [bash|zsh|fish|powershell]
 
 # Generate completion snippet for a single command
 tinycarapace <name> <shell>

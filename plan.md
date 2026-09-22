@@ -132,13 +132,6 @@ src/
 | zsh | ✅ | ✅ | ✅ (multi-block format) |
 | fish | ✅ | ✅ | ✅ |
 | powershell | ✅ | ✅ | ✅ (JSON via ConvertFrom-Json) |
-| elvish | ✅ | ✅ | ✅ (JSON via from-json) |
-| xonsh | ✅ | ✅ | ✅ (JSON via RichCompletion) |
-| oil | ✅ | ✅ | ✅ (bash-compatible) |
-| tcsh | ✅ | ✅ | ✅ (tab-separated) |
-| nushell | ✅ | ✅ | ✅ (JSON via from json) |
-| bash-ble | ✅ | ✅ | ✅ (ble/complete/cand/yield) |
-| cmd-clink | ✅ | ✅ | ✅ (tab-separated) |
 
 ### CLI
 | Mode | Status |
