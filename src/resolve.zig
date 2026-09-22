@@ -83,21 +83,22 @@ pub fn hasNonPosixFlags(cmd: spec.Command) bool {
 }
 
 pub fn completeFlags(allocator: std.mem.Allocator, cmd: spec.Command, prefix: []const u8) ![]traverse.Candidate {
-    return completeFlagsWithExclusive(allocator, cmd, prefix, null);
+    return completeFlagsWithExclusive(allocator, cmd, prefix, null, cmd.name, &.{});
 }
 
-pub fn completeFlagsWithExclusive(allocator: std.mem.Allocator, cmd: spec.Command, prefix: []const u8, consumed_flags: ?*const std.StringHashMap(void)) ![]traverse.Candidate {
+pub fn completeFlagsWithExclusive(allocator: std.mem.Allocator, cmd: spec.Command, prefix: []const u8, consumed_flags: ?*const std.StringHashMap(void), root_name: []const u8, cmd_path: []const []const u8) ![]traverse.Candidate {
+    const uid_base = try commandUid(allocator, root_name, cmd_path);
     var candidates = std.ArrayList(traverse.Candidate).empty;
     // Own local + persistent flags
     for (cmd.flags) |f| {
         if (f.hidden) continue;
         if (consumed_flags) |cf| { if (isFlagExcluded(cmd, f, cf)) continue; }
-        try addFlagCandidate(allocator, &candidates, f, prefix);
+        try addFlagCandidate(allocator, &candidates, f, prefix, uid_base);
     }
     for (cmd.persistent_flags) |f| {
         if (f.hidden) continue;
         if (consumed_flags) |cf| { if (isFlagExcluded(cmd, f, cf)) continue; }
-        try addFlagCandidate(allocator, &candidates, f, prefix);
+        try addFlagCandidate(allocator, &candidates, f, prefix, uid_base);
     }
     // Ancestors: only persistent flags are inherited
     var current = cmd.parent;
@@ -105,11 +106,27 @@ pub fn completeFlagsWithExclusive(allocator: std.mem.Allocator, cmd: spec.Comman
         for (p.persistent_flags) |f| {
             if (f.hidden) continue;
             if (consumed_flags) |cf| { if (isFlagExcluded(p.*, f, cf)) continue; }
-            try addFlagCandidate(allocator, &candidates, f, prefix);
+            try addFlagCandidate(allocator, &candidates, f, prefix, uid_base);
         }
         current = p.parent;
     }
     return candidates.toOwnedSlice(allocator);
+}
+
+/// Upstream flag styles: no-arg=default, optarg=yellow, multi-arg=magenta, arg=blue.
+fn flagStyle(f: Flag) []const u8 {
+    if (!f.takes_value) return "";
+    if (f.optarg) return "yellow";
+    if (f.nargs != 0) return "magenta";
+    return "blue";
+}
+
+/// Implicit command uid: "cmd://<root>[/<path>...]".
+fn commandUid(allocator: std.mem.Allocator, root_name: []const u8, cmd_path: []const []const u8) ![]const u8 {
+    var buf = std.ArrayList(u8).empty;
+    try buf.print(allocator, "cmd://{s}", .{root_name});
+    for (cmd_path) |p| try buf.print(allocator, "/{s}", .{p});
+    return buf.toOwnedSlice(allocator);
 }
 
 pub fn isFlagExcluded(cmd: spec.Command, f: Flag, consumed_flags: *const std.StringHashMap(void)) bool {
@@ -125,18 +142,20 @@ pub fn isFlagExcluded(cmd: spec.Command, f: Flag, consumed_flags: *const std.Str
     return false;
 }
 
-pub fn addFlagCandidate(allocator: std.mem.Allocator, candidates: *std.ArrayList(traverse.Candidate), f: Flag, prefix: []const u8) !void {
+pub fn addFlagCandidate(allocator: std.mem.Allocator, candidates: *std.ArrayList(traverse.Candidate), f: Flag, prefix: []const u8, uid_base: []const u8) !void {
+    const uid = try std.fmt.allocPrint(allocator, "{s}?flag={s}", .{ uid_base, f.name() });
+    const style = flagStyle(f);
     if (f.longhand.len > 0) {
         const dash = if (f.name_as_shorthand) "-" else "--";
         const form = try std.fmt.allocPrint(allocator, "{s}{s}", .{ dash, f.longhand });
         if (std.mem.startsWith(u8, form, prefix)) {
-            try candidates.append(allocator, .{ .value = form, .description = f.description });
+            try candidates.append(allocator, .{ .value = form, .description = f.description, .style = style, .uid = uid });
         } else allocator.free(form);
     }
     if (f.shorthand.len > 0) {
         const form = try std.fmt.allocPrint(allocator, "-{s}", .{f.shorthand});
         if (std.mem.startsWith(u8, form, prefix)) {
-            try candidates.append(allocator, .{ .value = form, .description = f.description });
+            try candidates.append(allocator, .{ .value = form, .description = f.description, .style = style, .uid = uid });
         } else allocator.free(form);
     }
 }

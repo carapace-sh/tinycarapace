@@ -113,6 +113,10 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
     var flag_values = std.StringHashMap([]const u8).init(allocator);
     var consumed_flag_names = std.StringHashMap(void).init(allocator); // for exclusiveflags
 
+    // Subcommand path (excluding the root command) for implicit uids
+    var path = std.ArrayList([]const u8).empty;
+    const root_name = root.name;
+
     // Track positional args for variable expansion
     var positional_args = std.ArrayList([]const u8).empty;
 
@@ -232,6 +236,7 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
                 current = sub;
                 positional_count = 0;
                 flag_parsing = current.parsing != .disabled;
+                try path.append(allocator, sub.name);
                 continue;
             }
         }
@@ -255,12 +260,12 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
                 const prefix = value[eq + 1 ..];
                 return resolve.completeFlagValueWithPrefixFull(allocator, io, current, flag_name, prefix, environ_map, &flag_values, positional_args.items);
             }
-            return resolve.completeFlagsWithExclusive(allocator, current, value, &consumed_flag_names);
+            return resolve.completeFlagsWithExclusive(allocator, current, value, &consumed_flag_names, root_name, path.items);
         }
         // Shorthand series: value is like "-v" or "-vf"
         // If only "-", complete all flags (longhand + shorthand)
         if (value.len == 1) {
-            return resolve.completeFlagsWithExclusive(allocator, current, value, &consumed_flag_names);
+            return resolve.completeFlagsWithExclusive(allocator, current, value, &consumed_flag_names, root_name, path.items);
         }
         // Check for = delimiter (non-POSIX -flag=value or POSIX -f=value)
         if (std.mem.indexOfScalar(u8, value, '=')) |eq| {
@@ -273,11 +278,11 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
         // Multi-char single-dash: could be non-POSIX flag or shorthand series.
         const shorthand_part = value[1..];
         if (shorthand_part.len > 1 and current.findFlag(shorthand_part) != null) {
-            return resolve.completeFlagsWithExclusive(allocator, current, value, &consumed_flag_names);
+            return resolve.completeFlagsWithExclusive(allocator, current, value, &consumed_flag_names, root_name, path.items);
         }
         // Check if any flag has a multi-char shorthand (non-POSIX mode).
         if (resolve.hasNonPosixFlags(current)) {
-            return resolve.completeFlagsWithExclusive(allocator, current, value, &consumed_flag_names);
+            return resolve.completeFlagsWithExclusive(allocator, current, value, &consumed_flag_names, root_name, path.items);
         }
         return resolve.completeShorthandSeriesWithEnv(allocator, io, current, shorthand_part, environ_map);
     }
@@ -300,7 +305,13 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
         var candidates = std.ArrayList(Candidate).empty;
         for (current.commands) |cmd| {
             if (!cmd.hidden and std.mem.startsWith(u8, cmd.name, value)) {
-                try candidates.append(allocator, .{ .value = cmd.name, .description = cmd.description, .tag = cmd.group });
+                try candidates.append(allocator, .{
+                    .value = cmd.name,
+                    .description = cmd.description,
+                    .tag = cmd.group,
+                    .style = subcommandStyle(current.commands, cmd),
+                    .uid = try commandUid(allocator, root_name, path.items, cmd.name),
+                });
             }
         }
         if (current.completion.positional.len > 0) {
@@ -330,6 +341,44 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
     }
 
     return &.{};
+}
+
+/// Implicit subcommand style: upstream highlight level by the group's
+/// first-seen order within the parent's commands (blue, yellow, magenta, ...).
+fn subcommandStyle(cmds: []const spec.Command, sub: spec.Command) []const u8 {
+    if (sub.group.len == 0) return "";
+    var level: usize = 0;
+    for (cmds) |c| {
+        if (c.group.len == 0) continue;
+        if (std.mem.eql(u8, c.group, sub.group)) return highlightStyle(level);
+        level += 1;
+    }
+    return "";
+}
+
+fn highlightStyle(level: usize) []const u8 {
+    return switch (level) {
+        0 => "blue",
+        1 => "yellow",
+        2 => "magenta",
+        3 => "cyan",
+        4 => "green",
+        5 => "dim blue",
+        6 => "dim yellow",
+        7 => "dim magenta",
+        8 => "dim cyan",
+        9 => "dim green",
+        else => "",
+    };
+}
+
+/// Implicit command uid: "cmd://<root>[/<path>...][/<leaf>]".
+fn commandUid(allocator: std.mem.Allocator, root_name: []const u8, path: []const []const u8, leaf: []const u8) ![]const u8 {
+    var buf = std.ArrayList(u8).empty;
+    try buf.print(allocator, "cmd://{s}", .{root_name});
+    for (path) |p| try buf.print(allocator, "/{s}", .{p});
+    try buf.print(allocator, "/{s}", .{leaf});
+    return buf.toOwnedSlice(allocator);
 }
 
 /// Resolve a list of raw completion values into candidates.
