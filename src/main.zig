@@ -146,7 +146,8 @@ fn runCommand(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, extra
             }
             const expanded = try traverse.expandVariables(allocator, item, &flag_values, positional_args.items, "");
             defer allocator.free(expanded);
-            try argv.append(allocator, expanded);
+            // Store a stable copy: `expanded` is freed at the end of this iteration
+            try argv.append(allocator, try allocator.dupe(u8, expanded));
         }
     } else {
         // Plain string: space-separated
