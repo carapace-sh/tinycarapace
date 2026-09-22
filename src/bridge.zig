@@ -1,6 +1,26 @@
 const std = @import("std");
 const traverse = @import("traverse.zig");
 
+/// Build the command line for line-based bridges: words joined with spaces,
+/// always ending with the current word. An empty word becomes a trailing
+/// space (COMP_LINE-style parsing) or '' when `quoted_empty` is set
+/// (shell-parsed input like fish/zsh/powershell).
+fn buildCompline(allocator: std.mem.Allocator, cmd: []const u8, args: []const []const u8, prefix: []const u8, quoted_empty: bool) ![]const u8 {
+    var cmdline = std.ArrayList(u8).empty;
+    try cmdline.appendSlice(allocator, cmd);
+    for (args) |a| {
+        try cmdline.append(allocator, ' ');
+        try cmdline.appendSlice(allocator, a);
+    }
+    try cmdline.append(allocator, ' ');
+    if (prefix.len > 0) {
+        try cmdline.appendSlice(allocator, prefix);
+    } else if (quoted_empty) {
+        try cmdline.appendSlice(allocator, "''");
+    }
+    return cmdline.toOwnedSlice(allocator);
+}
+
 /// Parse "$bridge.name(command, args...)" — delegate to framework-specific completion.
 pub fn resolveBridge(allocator: std.mem.Allocator, io: std.Io, macro: []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
     const paren = std.mem.indexOfScalar(u8, macro, '(') orelse return &.{};
@@ -111,7 +131,7 @@ fn bridgeCobra(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: 
     try argv.append(allocator, cmd);
     try argv.append(allocator, "__complete");
     for (args) |a| try argv.append(allocator, a);
-    if (prefix.len > 0) try argv.append(allocator, prefix);
+    try argv.append(allocator, prefix);
     const result = std.process.run(allocator, io, .{
         .argv = argv.items, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024),
         .environ_map = environ_map,
@@ -138,15 +158,12 @@ fn bridgeCobra(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: 
 
 /// Bridge: bash — run bash completion with COMP_LINE
 fn bridgeBash(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
-    var cmdline = std.ArrayList(u8).empty;
-    try cmdline.appendSlice(allocator, cmd);
-    for (args) |a| { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, a); }
-    if (prefix.len > 0) { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, prefix); }
+    const cmdline = try buildCompline(allocator, cmd, args, prefix, false);
 
     var env = std.process.Environ.Map.init(allocator);
     if (environ_map) |em| { var it = em.iterator(); while (it.next()) |entry| { try env.put(entry.key_ptr.*, entry.value_ptr.*); } }
-    try env.put("COMP_LINE", cmdline.items);
-    try env.put("COMP_POINT", try std.fmt.allocPrint(allocator, "{d}", .{cmdline.items.len}));
+    try env.put("COMP_LINE", cmdline);
+    try env.put("COMP_POINT", try std.fmt.allocPrint(allocator, "{d}", .{cmdline.len}));
     try env.put("COMP_TYPE", "63");
 
     var script = std.ArrayList(u8).empty;
@@ -180,10 +197,7 @@ fn bridgeBash(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: [
 
 /// Bridge: zsh — run zsh with compdef via capture script
 fn bridgeZsh(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
-    var cmdline = std.ArrayList(u8).empty;
-    try cmdline.appendSlice(allocator, cmd);
-    for (args) |a| { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, a); }
-    if (prefix.len > 0) { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, prefix); }
+    const cmdline = try buildCompline(allocator, cmd, args, prefix, true);
 
     var env = std.process.Environ.Map.init(allocator);
     if (environ_map) |em| { var it = em.iterator(); while (it.next()) |entry| { try env.put(entry.key_ptr.*, entry.value_ptr.*); } }
@@ -255,7 +269,7 @@ fn bridgeZsh(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []
     try zsh_argv.append(allocator, "-c");
     try zsh_argv.append(allocator, capture_script);
     try zsh_argv.append(allocator, "--");
-    try zsh_argv.append(allocator, cmdline.items);
+    try zsh_argv.append(allocator, cmdline);
 
     const result = std.process.run(allocator, io, .{
         .argv = zsh_argv.items, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024), .environ_map = &env,
@@ -285,10 +299,7 @@ fn bridgeZsh(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []
 
 /// Bridge: fish — run fish with complete --do-complete
 fn bridgeFish(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
-    var cmdline = std.ArrayList(u8).empty;
-    try cmdline.appendSlice(allocator, cmd);
-    for (args) |a| { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, a); }
-    if (prefix.len > 0) { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, prefix); }
+    const cmdline = try buildCompline(allocator, cmd, args, prefix, true);
 
     var env = std.process.Environ.Map.init(allocator);
     if (environ_map) |em| { var it = em.iterator(); while (it.next()) |entry| { try env.put(entry.key_ptr.*, entry.value_ptr.*); } }
@@ -300,7 +311,7 @@ fn bridgeFish(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: [
 
     const snippet = try std.fmt.allocPrint(allocator,
         "set __fish_config_dir {s};source \"$__fish_data_dir/config.fish\";source \"{s}/config.fish\";complete --do-complete=\"{s}\"",
-        .{ config_dir, config_dir, cmdline.items });
+        .{ config_dir, config_dir, cmdline });
     defer allocator.free(snippet);
 
     const result = std.process.run(allocator, io, .{
@@ -365,15 +376,12 @@ fn bridgeCarapaceBin(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, 
 
 /// Bridge: argcomplete — run with _ARGCOMPLETE=1 (v3)
 fn bridgeArgcomplete(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
-    var cmdline = std.ArrayList(u8).empty;
-    try cmdline.appendSlice(allocator, cmd);
-    for (args) |a| { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, a); }
-    if (prefix.len > 0) { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, prefix); }
+    const cmdline = try buildCompline(allocator, cmd, args, prefix, false);
     var env = std.process.Environ.Map.init(allocator);
     if (environ_map) |em| { var it = em.iterator(); while (it.next()) |entry| { try env.put(entry.key_ptr.*, entry.value_ptr.*); } }
     try env.put("_ARGCOMPLETE", "1"); try env.put("_ARGCOMPLETE_DFS", "\\t"); try env.put("_ARGCOMPLETE_IFS", "\\n");
-    try env.put("_ARGCOMPLETE_SHELL", "fish"); try env.put("COMP_LINE", cmdline.items);
-    try env.put("COMP_POINT", try std.fmt.allocPrint(allocator, "{d}", .{cmdline.items.len}));
+    try env.put("_ARGCOMPLETE_SHELL", "fish"); try env.put("COMP_LINE", cmdline);
+    try env.put("COMP_POINT", try std.fmt.allocPrint(allocator, "{d}", .{cmdline.len}));
     try env.put("_ARGCOMPLETE_SUPPRESS_SPACE", "1");
     const result = std.process.run(allocator, io, .{
         .argv = &.{ cmd }, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024), .environ_map = &env,
@@ -399,15 +407,12 @@ fn bridgeArgcomplete(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, 
 
 /// Bridge: argcomplete v1 — deprecated, uses fd 8/9
 fn bridgeArgcompleteV1(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
-    var cmdline = std.ArrayList(u8).empty;
-    try cmdline.appendSlice(allocator, cmd);
-    for (args) |a| { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, a); }
-    if (prefix.len > 0) { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, prefix); }
+    const cmdline = try buildCompline(allocator, cmd, args, prefix, false);
     var env = std.process.Environ.Map.init(allocator);
     if (environ_map) |em| { var it = em.iterator(); while (it.next()) |entry| { try env.put(entry.key_ptr.*, entry.value_ptr.*); } }
     try env.put("_ARGCOMPLETE", "1"); try env.put("_ARGCOMPLETE_DFS", "\\t"); try env.put("_ARGCOMPLETE_IFS", "\\n");
-    try env.put("_ARGCOMPLETE_SHELL", "fish"); try env.put("COMP_LINE", cmdline.items);
-    try env.put("COMP_POINT", try std.fmt.allocPrint(allocator, "{d}", .{cmdline.items.len}));
+    try env.put("_ARGCOMPLETE_SHELL", "fish"); try env.put("COMP_LINE", cmdline);
+    try env.put("COMP_POINT", try std.fmt.allocPrint(allocator, "{d}", .{cmdline.len}));
     try env.put("_ARGCOMPLETE_SUPPRESS_SPACE", "1");
     const shell_cmd = try std.fmt.allocPrint(allocator, "{s} 8>&1 9>&2 1>/dev/null 2>/dev/null", .{cmd});
     defer allocator.free(shell_cmd);
@@ -435,13 +440,10 @@ fn bridgeArgcompleteV1(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8
 
 /// Bridge: aws — run aws_completer with COMP_LINE
 fn bridgeAws(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
-    var cmdline = std.ArrayList(u8).empty;
-    try cmdline.appendSlice(allocator, cmd);
-    for (args) |a| { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, a); }
-    if (prefix.len > 0) { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, prefix); }
+    const cmdline = try buildCompline(allocator, cmd, args, prefix, false);
     var env = std.process.Environ.Map.init(allocator);
     if (environ_map) |em| { var it = em.iterator(); while (it.next()) |entry| { try env.put(entry.key_ptr.*, entry.value_ptr.*); } }
-    try env.put("COMP_LINE", cmdline.items);
+    try env.put("COMP_LINE", cmdline);
     const result = std.process.run(allocator, io, .{
         .argv = &.{ "aws_completer" }, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024), .environ_map = &env,
     }) catch |err| switch (err) {
@@ -464,7 +466,7 @@ fn bridgeAws(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []
 
 /// Bridge: clap — run `cmd complete --index ...`
 fn bridgeClap(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
-    const index = 1 + args.len + if (prefix.len > 0) @as(usize, 1) else 0;
+    const index = 1 + args.len;
     var argv = std.ArrayList([]const u8).empty;
     try argv.append(allocator, cmd);
     try argv.append(allocator, "complete");
@@ -476,7 +478,7 @@ fn bridgeClap(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: [
     try argv.append(allocator, "--ifs=\n");
     try argv.append(allocator, "--");
     for (args) |a| try argv.append(allocator, a);
-    if (prefix.len > 0) try argv.append(allocator, prefix);
+    try argv.append(allocator, prefix);
     const result = std.process.run(allocator, io, .{
         .argv = argv.items, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024),
         .environ_map = environ_map,
@@ -496,15 +498,12 @@ fn bridgeClap(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: [
 
 /// Bridge: click — run with _<CMD>_COMPLETE=zsh_complete
 fn bridgeClick(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
-    var cmdline = std.ArrayList(u8).empty;
-    try cmdline.appendSlice(allocator, cmd);
-    for (args) |a| { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, a); }
-    if (prefix.len > 0) { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, prefix); }
+    const cmdline = try buildCompline(allocator, cmd, args, prefix, false);
     var env = std.process.Environ.Map.init(allocator);
     if (environ_map) |em| { var it = em.iterator(); while (it.next()) |entry| { try env.put(entry.key_ptr.*, entry.value_ptr.*); } }
-    try env.put("COMP_WORDS", cmdline.items);
+    try env.put("COMP_WORDS", cmdline);
     var word_count: usize = 1;
-    for (cmdline.items) |c| { if (c == ' ') word_count += 1; }
+    for (cmdline) |c| { if (c == ' ') word_count += 1; }
     try env.put("COMP_CWORD", try std.fmt.allocPrint(allocator, "{d}", .{word_count}));
     var upper_buf: [256]u8 = undefined;
     var upper_len: usize = 0;
@@ -531,13 +530,10 @@ fn bridgeClick(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: 
 
 /// Bridge: complete — run with COMP_LINE
 fn bridgeComplete(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
-    var cmdline = std.ArrayList(u8).empty;
-    try cmdline.appendSlice(allocator, cmd);
-    for (args) |a| { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, a); }
-    if (prefix.len > 0) { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, prefix); }
+    const cmdline = try buildCompline(allocator, cmd, args, prefix, false);
     var env = std.process.Environ.Map.init(allocator);
     if (environ_map) |em| { var it = em.iterator(); while (it.next()) |entry| { try env.put(entry.key_ptr.*, entry.value_ptr.*); } }
-    try env.put("COMP_LINE", cmdline.items);
+    try env.put("COMP_LINE", cmdline);
     const result = std.process.run(allocator, io, .{
         .argv = &.{ cmd }, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024), .environ_map = &env,
     }) catch |err| switch (err) {
@@ -564,14 +560,11 @@ fn bridgeGcloud(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args:
 
 /// Bridge: inshellisense — run `inshellisense complete <input>`
 fn bridgeInshellisense(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
-    var cmdline = std.ArrayList(u8).empty;
-    try cmdline.appendSlice(allocator, cmd);
-    for (args) |a| { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, a); }
-    if (prefix.len > 0) { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, prefix); }
+    const cmdline = try buildCompline(allocator, cmd, args, prefix, false);
     var argv = std.ArrayList([]const u8).empty;
     try argv.append(allocator, "inshellisense");
     try argv.append(allocator, "complete");
-    try argv.append(allocator, cmdline.items);
+    try argv.append(allocator, cmdline);
     const result = std.process.run(allocator, io, .{
         .argv = argv.items, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024),
         .environ_map = environ_map,
@@ -615,7 +608,7 @@ fn bridgeJJ(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []c
     try argv.append(allocator, cmd);
     try argv.append(allocator, "--");
     for (args) |a| try argv.append(allocator, a);
-    if (prefix.len > 0) try argv.append(allocator, prefix);
+    try argv.append(allocator, prefix);
     const result = std.process.run(allocator, io, .{
         .argv = argv.items, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024), .environ_map = &env,
     }) catch |err| switch (err) {
@@ -646,7 +639,7 @@ fn bridgeKingpin(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args
     try argv.append(allocator, cmd);
     try argv.append(allocator, "--completion-bash");
     for (args) |a| try argv.append(allocator, a);
-    if (prefix.len > 0) try argv.append(allocator, prefix);
+    try argv.append(allocator, prefix);
     const result = std.process.run(allocator, io, .{
         .argv = argv.items, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024),
         .environ_map = environ_map,
@@ -673,10 +666,7 @@ fn bridgeKitten(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args:
 
 /// Bridge: powershell — run pwsh with CommandCompletion::CompleteInput
 fn bridgePowershell(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
-    var cmdline = std.ArrayList(u8).empty;
-    try cmdline.appendSlice(allocator, cmd);
-    for (args) |a| { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, a); }
-    if (prefix.len > 0) { try cmdline.append(allocator, ' '); try cmdline.appendSlice(allocator, prefix); }
+    const cmdline = try buildCompline(allocator, cmd, args, prefix, true);
     var env = std.process.Environ.Map.init(allocator);
     if (environ_map) |em| { var it = em.iterator(); while (it.next()) |entry| { try env.put(entry.key_ptr.*, entry.value_ptr.*); } }
     const home = if (environ_map) |em| em.get("HOME") orelse "/tmp" else "/tmp";
@@ -684,7 +674,7 @@ fn bridgePowershell(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, a
     defer allocator.free(config_dir);
     const snippet = try std.fmt.allocPrint(allocator,
         "Get-Content \"{s}/Microsoft.PowerShell_profile.ps1\" | Out-String | Invoke-Expression;[System.Management.Automation.CommandCompletion]::CompleteInput(\"{s}\", {d}, $null).CompletionMatches | ConvertTo-Json",
-        .{ config_dir, cmdline.items, cmdline.items.len });
+        .{ config_dir, cmdline, cmdline.len });
     defer allocator.free(snippet);
     const result = std.process.run(allocator, io, .{
         .argv = &.{ "pwsh", "-Command", snippet }, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024), .environ_map = &env,
@@ -724,7 +714,7 @@ fn bridgeUrfavecli(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, ar
     var argv = std.ArrayList([]const u8).empty;
     try argv.append(allocator, cmd);
     for (args) |a| try argv.append(allocator, a);
-    if (prefix.len > 0) try argv.append(allocator, prefix);
+    try argv.append(allocator, prefix);
     try argv.append(allocator, "--generate-shell-completion");
     var env = std.process.Environ.Map.init(allocator);
     if (environ_map) |em| { var it = em.iterator(); while (it.next()) |entry| { try env.put(entry.key_ptr.*, entry.value_ptr.*); } }
@@ -755,7 +745,7 @@ fn bridgeUrfavecliV1(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, 
     var argv = std.ArrayList([]const u8).empty;
     try argv.append(allocator, cmd);
     for (args) |a| try argv.append(allocator, a);
-    if (prefix.len > 0) try argv.append(allocator, prefix);
+    try argv.append(allocator, prefix);
     try argv.append(allocator, "--generate-bash-completion");
     const result = std.process.run(allocator, io, .{
         .argv = argv.items, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024),
@@ -779,7 +769,7 @@ fn bridgeYargs(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: 
     var argv = std.ArrayList([]const u8).empty;
     try argv.append(allocator, cmd); try argv.append(allocator, "--get-yargs-completions");
     for (args) |a| try argv.append(allocator, a);
-    if (prefix.len > 0) try argv.append(allocator, prefix);
+    try argv.append(allocator, prefix);
     var env = std.process.Environ.Map.init(allocator);
     if (environ_map) |em| { var it = em.iterator(); while (it.next()) |entry| { try env.put(entry.key_ptr.*, entry.value_ptr.*); } }
     try env.put("SHELL", "zsh");
@@ -840,6 +830,24 @@ test "exec macro returns command output lines" {
     try std.testing.expectEqual(@as(usize, 2), candidates.len);
     try std.testing.expectEqualStrings("one", candidates[0].value);
     try std.testing.expectEqualStrings("two", candidates[1].value);
+}
+
+test "buildCompline keeps empty word" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const line = try buildCompline(a, "git", &.{"show"}, "", false);
+    try std.testing.expectEqualStrings("git show ", line);
+
+    const quoted = try buildCompline(a, "git", &.{"show"}, "", true);
+    try std.testing.expectEqualStrings("git show ''", quoted);
+
+    const partial = try buildCompline(a, "git", &.{"show"}, "mas", false);
+    try std.testing.expectEqualStrings("git show mas", partial);
+
+    const noargs = try buildCompline(a, "git", &.{}, "", false);
+    try std.testing.expectEqualStrings("git ", noargs);
 }
 
 test "exec macro handles empty output" {
