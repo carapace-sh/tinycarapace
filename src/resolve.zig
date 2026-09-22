@@ -18,6 +18,7 @@ fn resolveSingleValue(allocator: std.mem.Allocator, io: std.Io, candidates: *std
                         .style = try allocator.dupe(u8, c.style),
                         .nospace = c.nospace,
                         .tag = try allocator.dupe(u8, c.tag),
+                        .uid = try allocator.dupe(u8, c.uid),
                     });
                 }
             }
@@ -32,6 +33,7 @@ fn resolveSingleValue(allocator: std.mem.Allocator, io: std.Io, candidates: *std
                         .style = try allocator.dupe(u8, c.style),
                         .nospace = c.nospace,
                         .tag = try allocator.dupe(u8, c.tag),
+                        .uid = try allocator.dupe(u8, c.uid),
                     });
                 }
             }

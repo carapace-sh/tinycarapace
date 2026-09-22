@@ -146,6 +146,7 @@ fn modPrefix(allocator: std.mem.Allocator, candidates: []traverse.Candidate, pre
             .style = try allocator.dupe(u8, c.style),
             .nospace = c.nospace,
             .tag = try allocator.dupe(u8, c.tag),
+            .uid = try allocator.dupe(u8, c.uid),
         };
     }
     return result;
@@ -160,6 +161,7 @@ fn modSuffix(allocator: std.mem.Allocator, candidates: []traverse.Candidate, suf
             .style = try allocator.dupe(u8, c.style),
             .nospace = c.nospace,
             .tag = try allocator.dupe(u8, c.tag),
+            .uid = try allocator.dupe(u8, c.uid),
         };
     }
     return result;
@@ -170,7 +172,7 @@ fn modNospace(allocator: std.mem.Allocator, candidates: []traverse.Candidate, ch
     for (candidates, 0..) |c, i| {
         var has_char = false;
         for (chars) |ch| { if (std.mem.indexOfScalar(u8, c.value, ch) != null) { has_char = true; break; } }
-        result[i] = .{ .value = try allocator.dupe(u8, c.value), .description = try allocator.dupe(u8, c.description), .style = try allocator.dupe(u8, c.style), .nospace = has_char, .tag = try allocator.dupe(u8, c.tag) };
+        result[i] = .{ .value = try allocator.dupe(u8, c.value), .description = try allocator.dupe(u8, c.description), .style = try allocator.dupe(u8, c.style), .nospace = has_char, .tag = try allocator.dupe(u8, c.tag), .uid = try allocator.dupe(u8, c.uid) };
     }
     return result;
 }
@@ -182,7 +184,7 @@ fn modNoprefix(allocator: std.mem.Allocator, candidates: []traverse.Candidate, c
 fn modStyle(allocator: std.mem.Allocator, candidates: []traverse.Candidate, style: []const u8) ![]traverse.Candidate {
     var result = try allocator.alloc(traverse.Candidate, candidates.len);
     for (candidates, 0..) |c, i| {
-        result[i] = .{ .value = try allocator.dupe(u8, c.value), .description = try allocator.dupe(u8, c.description), .style = try allocator.dupe(u8, style), .nospace = c.nospace, .tag = try allocator.dupe(u8, c.tag) };
+        result[i] = .{ .value = try allocator.dupe(u8, c.value), .description = try allocator.dupe(u8, c.description), .style = try allocator.dupe(u8, style), .nospace = c.nospace, .tag = try allocator.dupe(u8, c.tag), .uid = try allocator.dupe(u8, c.uid) };
     }
     return result;
 }
@@ -190,7 +192,7 @@ fn modStyle(allocator: std.mem.Allocator, candidates: []traverse.Candidate, styl
 fn modTag(allocator: std.mem.Allocator, candidates: []traverse.Candidate, tag: []const u8) ![]traverse.Candidate {
     var result = try allocator.alloc(traverse.Candidate, candidates.len);
     for (candidates, 0..) |c, i| {
-        result[i] = .{ .value = try allocator.dupe(u8, c.value), .description = try allocator.dupe(u8, c.description), .style = try allocator.dupe(u8, c.style), .nospace = c.nospace, .tag = try allocator.dupe(u8, tag) };
+        result[i] = .{ .value = try allocator.dupe(u8, c.value), .description = try allocator.dupe(u8, c.description), .style = try allocator.dupe(u8, c.style), .nospace = c.nospace, .tag = try allocator.dupe(u8, tag), .uid = try allocator.dupe(u8, c.uid) };
     }
     return result;
 }
@@ -240,15 +242,53 @@ fn modUsage(allocator: std.mem.Allocator, candidates: []traverse.Candidate, usag
     if (candidates.len == 0) return &.{};
     var result = try allocator.alloc(traverse.Candidate, candidates.len);
     for (candidates, 0..) |c, i| {
-        result[i] = if (i == 0) .{ .value = try allocator.dupe(u8, c.value), .description = try allocator.dupe(u8, usage), .style = try allocator.dupe(u8, c.style), .nospace = c.nospace, .tag = try allocator.dupe(u8, c.tag) } else c;
+        result[i] = if (i == 0) .{ .value = try allocator.dupe(u8, c.value), .description = try allocator.dupe(u8, usage), .style = try allocator.dupe(u8, c.style), .nospace = c.nospace, .tag = try allocator.dupe(u8, c.tag), .uid = try allocator.dupe(u8, c.uid) } else c;
     }
     return result;
 }
 
-fn modUid(allocator: std.mem.Allocator, candidates: []traverse.Candidate, _: []const u8) ![]traverse.Candidate {
+fn modUid(allocator: std.mem.Allocator, candidates: []traverse.Candidate, args: []const u8) ![]traverse.Candidate {
+    // $uid([scheme, host, opts...]) — build scheme://host/<path>?query per value
+    const parts = try builtins.parseFlowList(allocator, args);
+    if (parts.len < 2) return error.InvalidModifier;
+    const scheme = parts[0];
+    const host = parts[1];
+
     var result = try allocator.alloc(traverse.Candidate, candidates.len);
-    for (candidates, 0..) |c, i| result[i] = c;
+    for (candidates, 0..) |c, i| {
+        var buf = std.ArrayList(u8).empty;
+        try buf.print(allocator, "{s}://{s}/{s}", .{ scheme, try pathEscape(allocator, host), try pathEscape(allocator, c.value) });
+        var j: usize = 2;
+        var first = true;
+        while (j + 1 < parts.len) : (j += 2) {
+            if (parts[j + 1].len == 0) continue; // implicitly skip empty values
+            try buf.appendSlice(allocator, if (first) "?" else "&");
+            first = false;
+            try buf.print(allocator, "{s}={s}", .{ try pathEscape(allocator, parts[j]), try pathEscape(allocator, parts[j + 1]) });
+        }
+        result[i] = .{
+            .value = try allocator.dupe(u8, c.value),
+            .description = try allocator.dupe(u8, c.description),
+            .style = try allocator.dupe(u8, c.style),
+            .nospace = c.nospace,
+            .tag = try allocator.dupe(u8, c.tag),
+            .uid = try buf.toOwnedSlice(allocator),
+        };
+    }
     return result;
+}
+
+/// Percent-encode a URL path segment (escape everything but unreserved chars).
+fn pathEscape(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
+    var buf = std.ArrayList(u8).empty;
+    for (s) |c| {
+        if (std.ascii.isAlphanumeric(c) or c == '-' or c == '_' or c == '.' or c == '~') {
+            try buf.append(allocator, c);
+        } else {
+            try buf.print(allocator, "%{X:0>2}", .{c});
+        }
+    }
+    return buf.toOwnedSlice(allocator);
 }
 
 fn modSplit(allocator: std.mem.Allocator, candidates: []traverse.Candidate, args: []const u8) ![]traverse.Candidate {
@@ -261,7 +301,7 @@ fn modSplit(allocator: std.mem.Allocator, candidates: []traverse.Candidate, args
             if (std.mem.lastIndexOfScalar(u8, c.value, d)) |pos| { if (@as(i64, @intCast(pos)) > last_pos) last_pos = @as(i64, @intCast(pos)); }
         }
         if (last_pos >= 0) {
-            try result.append(allocator, .{ .value = try allocator.dupe(u8, c.value[@as(usize, @intCast(last_pos)) + 1 ..]), .description = try allocator.dupe(u8, c.description), .style = try allocator.dupe(u8, c.style), .nospace = c.nospace, .tag = try allocator.dupe(u8, c.tag) });
+            try result.append(allocator, .{ .value = try allocator.dupe(u8, c.value[@as(usize, @intCast(last_pos)) + 1 ..]), .description = try allocator.dupe(u8, c.description), .style = try allocator.dupe(u8, c.style), .nospace = c.nospace, .tag = try allocator.dupe(u8, c.tag), .uid = try allocator.dupe(u8, c.uid) });
         } else {
             try result.append(allocator, c);
         }
@@ -317,6 +357,22 @@ test "exec macro with tab-separated descriptions" {
     try std.testing.expectEqualStrings("first", candidates[0].description);
     try std.testing.expectEqualStrings("two", candidates[1].value);
     try std.testing.expectEqualStrings("second", candidates[1].description);
+}
+
+test "uid modifier builds scheme://host/path urls" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const candidates = try resolveMacro(arena.allocator(), std.testing.io, "one\tfirst ||| $uid([rails, rake])", "", null);
+    try std.testing.expectEqual(@as(usize, 1), candidates.len);
+    try std.testing.expectEqualStrings("rails://rake/one", candidates[0].uid);
+}
+
+test "uid modifier with options" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const candidates = try resolveMacro(arena.allocator(), std.testing.io, "my file ||| $uid([file, fs, type, task])", "", null);
+    try std.testing.expectEqual(@as(usize, 1), candidates.len);
+    try std.testing.expectEqualStrings("file://fs/my%20file?type=task", candidates[0].uid);
 }
 
 test "modifier prefix" {

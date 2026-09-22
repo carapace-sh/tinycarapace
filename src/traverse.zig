@@ -10,6 +10,7 @@ pub const Candidate = struct {
     style: []const u8 = "",
     nospace: bool = false,
     tag: []const u8 = "",
+    uid: []const u8 = "",
 };
 
 /// Split a raw value string into (value, description, style) using tab separators.

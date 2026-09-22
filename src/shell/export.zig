@@ -67,6 +67,11 @@ pub fn formatOutput(allocator: std.mem.Allocator, candidates: []traverse.Candida
             try writeJsonString(&buf, allocator, c.tag);
             try buf.appendSlice(allocator, "\"");
         }
+        if (c.uid.len > 0) {
+            try buf.appendSlice(allocator, ",\n      \"uid\": \"");
+            try writeJsonString(&buf, allocator, c.uid);
+            try buf.appendSlice(allocator, "\"");
+        }
         try buf.appendSlice(allocator, "\n    }");
     }
 
@@ -155,4 +160,16 @@ test "export with tag" {
     };
     const out = try formatOutput(arena.allocator(), @constCast(&candidates));
     try std.testing.expect(std.mem.indexOf(u8, out, "\"tag\": \"mytag\"") != null);
+}
+
+test "export with uid" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const candidates = [_]traverse.Candidate{
+        .{ .value = "val", .uid = "rails://rake/val" },
+        .{ .value = "plain" },
+    };
+    const out = try formatOutput(arena.allocator(), @constCast(&candidates));
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"uid\": \"rails://rake/val\"") != null);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\"uid\""));
 }

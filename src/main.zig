@@ -364,6 +364,7 @@ test {
     _ = @import("traverse.zig");
     _ = @import("resolve.zig");
     _ = @import("action.zig");
+    _ = @import("style.zig");
     _ = @import("builtins.zig");
     _ = @import("bridge.zig");
     _ = @import("shell/bash.zig");

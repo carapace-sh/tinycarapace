@@ -107,7 +107,9 @@ pub fn formatOutput(allocator: std.mem.Allocator, candidates: []traverse.Candida
     }
 
     // Four fields: zstyle\x01message\x01noprefix\x01data
-    try buf.appendSlice(allocator, "default");
+    const zstyles = try formatZstyles(allocator, candidates);
+    try buf.appendSlice(allocator, zstyles);
+    allocator.free(zstyles);
     try buf.append(allocator, '\x01');
     try buf.append(allocator, '\x01');
     try buf.print(allocator, "{s}\x01", .{if (has_noprefix) "true" else "false"});
@@ -131,6 +133,44 @@ pub fn formatOutput(allocator: std.mem.Allocator, candidates: []traverse.Candida
     try buf.append(allocator, '\x02');
 
     return buf.toOwnedSlice(allocator);
+}
+
+/// Escape zsh list-colors pattern characters in a display string.
+fn escapeZstyle(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
+    var buf = std.ArrayList(u8).empty;
+    for (s) |c| {
+        switch (c) {
+            '#', '*', '(', ')', '[', ']', '|', '~' => {
+                try buf.append(allocator, '\\');
+                try buf.append(allocator, c);
+            },
+            else => try buf.append(allocator, c),
+        }
+    }
+    return buf.toOwnedSlice(allocator);
+}
+
+/// Build zsh list-colors patterns from candidate styles (upstream zstyles.Format).
+/// Styling is disabled for large amounts of values (bad performance).
+fn formatZstyles(allocator: std.mem.Allocator, candidates: []traverse.Candidate) ![]const u8 {
+    const style = @import("../style.zig");
+    const limit = 300; // upstream default for CARAPACE_ZSH_STYLE_LIMIT
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var parts = std.ArrayList(u8).empty;
+    if (candidates.len < limit) {
+        for (candidates) |c| {
+            const value_sgr = if (style.isValid(c.style)) try style.sgr(a, c.style) else "";
+            const display = try escapeZstyle(a, c.value);
+            try parts.print(allocator, "=(#b)({s})([ ]## -- *)=0={s}=:", .{ display, value_sgr });
+            try parts.print(allocator, "=(#b)({s})=0={s}:", .{ display, value_sgr });
+        }
+    }
+    try parts.appendSlice(allocator, "=(#b)(-- *)=0=");
+    return parts.toOwnedSlice(allocator);
 }
 
 test "zsh init script" {
@@ -170,5 +210,6 @@ test "zsh format output" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\x02") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "json") != null);
     // 4-field format: zstyle\x01message\x01noprefix\x01data
-    try std.testing.expect(std.mem.startsWith(u8, out, "default\x01\x01"));
+    try std.testing.expect(std.mem.indexOf(u8, out, "\x01\x01") != null);
+    try std.testing.expect(std.mem.startsWith(u8, out, "=(#b)(json)([ ]## -- *)=0="));
 }

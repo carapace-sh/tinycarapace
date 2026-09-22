@@ -566,17 +566,31 @@ const Parser = struct {
 
         if (self.src[self.pos] == '"') {
             self.pos += 1;
-            const start = self.pos;
+            var buf = std.ArrayList(u8).empty;
             while (self.pos < self.src.len and self.src[self.pos] != '"') {
                 if (self.src[self.pos] == '\\' and self.pos + 1 < self.src.len) {
-                    self.pos += 2;
+                    self.pos += 1;
+                    const escaped = self.src[self.pos];
+                    switch (escaped) {
+                        't' => try buf.append(self.alloc(), '\t'),
+                        'n' => try buf.append(self.alloc(), '\n'),
+                        'r' => try buf.append(self.alloc(), '\r'),
+                        '0' => try buf.append(self.alloc(), 0),
+                        '\\' => try buf.append(self.alloc(), '\\'),
+                        '"' => try buf.append(self.alloc(), '"'),
+                        else => {
+                            try buf.append(self.alloc(), '\\');
+                            try buf.append(self.alloc(), escaped);
+                        },
+                    }
+                    self.pos += 1;
                 } else {
+                    try buf.append(self.alloc(), self.src[self.pos]);
                     self.pos += 1;
                 }
             }
-            const end = self.pos;
             if (self.pos < self.src.len) self.pos += 1;
-            return self.src[start..end];
+            return buf.items;
         }
 
         const start = self.pos;
