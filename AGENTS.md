@@ -328,8 +328,8 @@ From `plan.md`:
 
 ### Not implemented (deferred)
 
-- `$spec(path)` macro — circular dependency (action → traverse → action)
-- `$split`/`$splitp` as standalone macros (only as modifiers)
-- `COMP_WORDBREAKS` re-lexing in bash snippet
-- `documentation` and `examples` spec fields
+- `COMP_WORDBREAKS` re-lexing in bash snippet (upstream `bash/action.go` splits
+  the line on wordbreak chars and handles common display prefixes)
+- Zsh quote-state handling (`QUOTING_STATE` etc. in upstream `zsh/action.go`)
+- Bash value quoting/escaping (`requiresQuoting`, `escapingQuotedReplacer`)
 - elvish/shell discovery for bridges
