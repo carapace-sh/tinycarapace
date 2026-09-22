@@ -11,6 +11,7 @@ pub fn generateInitScript(allocator: std.mem.Allocator, specs: []const spec.Spec
     // to handle cases like --flag=value being split by bash. This is a known limitation
     // of the current xargs-based approach.
     try buf.print(allocator,
+        \\#!/bin/bash
         \\_carapace_completer() {{
         \\  export COMP_LINE
         \\  export COMP_POINT
@@ -52,6 +53,7 @@ pub fn generateSnippet(allocator: std.mem.Allocator, name: []const u8) ![]const 
     const exe = "carapace-tiny";
 
     try buf.print(allocator,
+        \\#!/bin/bash
         \\_{s}_completion() {{
         \\  export COMP_LINE
         \\  export COMP_POINT
@@ -117,6 +119,7 @@ test "init script has COMP_WORDBREAKS and mapfile" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const script = try generateInitScript(arena.allocator(), specs[0..]);
+    try std.testing.expect(std.mem.indexOf(u8, script, "#!/bin/bash") != null);
     try std.testing.expect(std.mem.indexOf(u8, script, "COMP_WORDBREAKS") != null);
     try std.testing.expect(std.mem.indexOf(u8, script, "mapfile") != null);
     try std.testing.expect(std.mem.indexOf(u8, script, "unset COMPREPLY") != null);
@@ -126,6 +129,7 @@ test "snippet has COMP_WORDBREAKS and mapfile" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const snippet = try generateSnippet(arena.allocator(), "mycmd");
+    try std.testing.expect(std.mem.indexOf(u8, snippet, "#!/bin/bash") != null);
     try std.testing.expect(std.mem.indexOf(u8, snippet, "COMP_WORDBREAKS") != null);
     try std.testing.expect(std.mem.indexOf(u8, snippet, "mapfile") != null);
 }

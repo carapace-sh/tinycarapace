@@ -73,15 +73,6 @@ pub fn generateSnippet(allocator: std.mem.Allocator, name: []const u8) ![]const 
 pub fn formatOutput(allocator: std.mem.Allocator, candidates: []traverse.Candidate, _: ?[]const u8) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
 
-    var has_nospace = false;
-    for (candidates) |c| {
-        if (c.nospace) {
-            has_nospace = true;
-            break;
-        }
-    }
-    try buf.print(allocator, "{s}\x01", .{if (has_nospace) "true" else "false"});
-
     for (candidates) |c| {
         if (c.description.len > 0) {
             try buf.print(allocator, "{s}\t{s}\n", .{ c.value, c.description });
@@ -122,4 +113,6 @@ test "fish format output" {
     defer std.testing.allocator.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "json\tJSON format") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "yaml\n") != null);
+    try std.testing.expect(!std.mem.startsWith(u8, out, "true\x01"));
+    try std.testing.expect(!std.mem.startsWith(u8, out, "false\x01"));
 }

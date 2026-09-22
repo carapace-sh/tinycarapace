@@ -22,17 +22,20 @@ pub fn generateInitScript(allocator: std.mem.Allocator, specs: []const spec.Spec
         \\  local IFS=$'\n'
         \\  local lines
         \\
-        \\  lines="$(echo "${{compline}}''" | CARAPACE_COMPLINE="${{compline}}" xargs {s} "${{command}}" zsh 2>/dev/null)"
+        \\  lines="$(echo "${{compline}}''" | CARAPACE_COMPLINE="${{compline}}" CARAPACE_ZSH_HASH_DIRS="$(hash -d)" xargs {s} "${{command}}" zsh 2>/dev/null)"
         \\  if [ $? -eq 1 ]; then
-        \\    lines="$(echo "${{compline}}'" | CARAPACE_COMPLINE="${{compline}}" xargs {s} "${{command}}" zsh 2>/dev/null)"
+        \\    lines="$(echo "${{compline}}'" | CARAPACE_COMPLINE="${{compline}}" CARAPACE_ZSH_HASH_DIRS="$(hash -d)" xargs {s} "${{command}}" zsh 2>/dev/null)"
         \\    if [ $? -eq 1 ]; then
-        \\      lines="$(echo "${{compline}}\"" | CARAPACE_COMPLINE="${{compline}}" xargs {s} "${{command}}" zsh 2>/dev/null)"
+        \\      lines="$(echo "${{compline}}\"" | CARAPACE_COMPLINE="${{compline}}" CARAPACE_ZSH_HASH_DIRS="$(hash -d)" xargs {s} "${{command}}" zsh 2>/dev/null)"
         \\    fi
         \\  fi
         \\
-        \\  local nospace data
-        \\  IFS=$'\001' read -r -d '' nospace data <<<"${{lines}}"
-        \\  [[ "${{nospace}}z" = "truez" ]] && compstate[insert]=menu
+        \\  local zstyle message noprefix data
+        \\  IFS=$'\001' read -r -d '' zstyle message noprefix data <<<"${{lines}}"
+        \\  zstyle ":completion:${{curcontext}}:*" list-colors "${{zstyle}}"
+        \\  zstyle ":completion:${{curcontext}}:*" group-name ''
+        \\  [ -z "${{message}}" ] || _message -r "${{message}}"
+        \\  [[ "${{noprefix}}" = "true" ]] && compstate[insert]=menu
         \\
         \\  local tag displays values displaysArr valuesArr
         \\  while IFS=$'\002' read -r -d $'\002' block; do
@@ -42,6 +45,7 @@ pub fn generateInitScript(allocator: std.mem.Allocator, specs: []const spec.Spec
         \\    [[ ${{#valuesArr[@]}} -gt 1 ]] && _describe -t "${{tag}}" "${{tag}}" displaysArr valuesArr -Q -S ''
         \\  done <<<"${{data}}"
         \\}}
+        \\compquote '' 2>/dev/null && _carapace_completer
         \\compdef _carapace_completer {s}
         \\
     , .{ names.items, exe, exe, exe, names.items });
@@ -60,17 +64,20 @@ pub fn generateSnippet(allocator: std.mem.Allocator, name: []const u8) ![]const 
         \\  local IFS=$'\n'
         \\  local lines
         \\
-        \\  lines="$(echo "${{compline}}''" | CARAPACE_COMPLINE="${{compline}}" xargs {s} '{s}' zsh 2>/dev/null)"
+        \\  lines="$(echo "${{compline}}''" | CARAPACE_COMPLINE="${{compline}}" CARAPACE_ZSH_HASH_DIRS="$(hash -d)" xargs {s} '{s}' zsh 2>/dev/null)"
         \\  if [ $? -eq 1 ]; then
-        \\    lines="$(echo "${{compline}}'" | CARAPACE_COMPLINE="${{compline}}" xargs {s} '{s}' zsh 2>/dev/null)"
+        \\    lines="$(echo "${{compline}}'" | CARAPACE_COMPLINE="${{compline}}" CARAPACE_ZSH_HASH_DIRS="$(hash -d)" xargs {s} '{s}' zsh 2>/dev/null)"
         \\    if [ $? -eq 1 ]; then
-        \\      lines="$(echo "${{compline}}\"" | CARAPACE_COMPLINE="${{compline}}" xargs {s} '{s}' zsh 2>/dev/null)"
+        \\      lines="$(echo "${{compline}}\"" | CARAPACE_COMPLINE="${{compline}}" CARAPACE_ZSH_HASH_DIRS="$(hash -d)" xargs {s} '{s}' zsh 2>/dev/null)"
         \\    fi
         \\  fi
         \\
-        \\  local nospace data
-        \\  IFS=$'\001' read -r -d '' nospace data <<<"${{lines}}"
-        \\  [[ "${{nospace}}z" = "truez" ]] && compstate[insert]=menu
+        \\  local zstyle message noprefix data
+        \\  IFS=$'\001' read -r -d '' zstyle message noprefix data <<<"${{lines}}"
+        \\  zstyle ":completion:${{curcontext}}:*" list-colors "${{zstyle}}"
+        \\  zstyle ":completion:${{curcontext}}:*" group-name ''
+        \\  [ -z "${{message}}" ] || _message -r "${{message}}"
+        \\  [[ "${{noprefix}}" = "true" ]] && compstate[insert]=menu
         \\
         \\  local tag displays values displaysArr valuesArr
         \\  while IFS=$'\002' read -r -d $'\002' block; do
@@ -80,9 +87,10 @@ pub fn generateSnippet(allocator: std.mem.Allocator, name: []const u8) ![]const 
         \\    [[ ${{#valuesArr[@]}} -gt 1 ]] && _describe -t "${{tag}}" "${{tag}}" displaysArr valuesArr -Q -S ''
         \\  done <<<"${{data}}"
         \\}}
+        \\compquote '' 2>/dev/null && _{s}_completion
         \\compdef _{s}_completion {s}
         \\
-    , .{ name, name, exe, name, exe, name, exe, name, name, name });
+    , .{ name, name, exe, name, exe, name, exe, name, name, name, name });
 
     return buf.toOwnedSlice(allocator);
 }
@@ -90,16 +98,19 @@ pub fn generateSnippet(allocator: std.mem.Allocator, name: []const u8) ![]const 
 pub fn formatOutput(allocator: std.mem.Allocator, candidates: []traverse.Candidate, _: ?[]const u8) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
 
-    var has_nospace = false;
+    var has_noprefix = false;
     for (candidates) |c| {
         if (c.nospace) {
-            has_nospace = true;
+            has_noprefix = true;
             break;
         }
     }
 
-    // Line: nospace\x01 then data blocks
-    try buf.print(allocator, "{s}\x01", .{if (has_nospace) "true" else "false"});
+    // Four fields: zstyle\x01message\x01noprefix\x01data
+    try buf.appendSlice(allocator, "default");
+    try buf.append(allocator, '\x01');
+    try buf.append(allocator, '\x01');
+    try buf.print(allocator, "{s}\x01", .{if (has_noprefix) "true" else "false"});
 
     // Single block: tag\x03displays\x04\x03values\x04\x02
     try buf.appendSlice(allocator, "completions");
@@ -131,7 +142,11 @@ test "zsh init script" {
     const script = try generateInitScript(arena.allocator(), specs[0..]);
     try std.testing.expect(std.mem.indexOf(u8, script, "#compdef mycmd") != null);
     try std.testing.expect(std.mem.indexOf(u8, script, "CARAPACE_COMPLINE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "CARAPACE_ZSH_HASH_DIRS") != null);
     try std.testing.expect(std.mem.indexOf(u8, script, "compstate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "compquote") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "zstyle") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "_message") != null);
 }
 
 test "zsh snippet" {
@@ -139,6 +154,8 @@ test "zsh snippet" {
     defer arena.deinit();
     const snippet = try generateSnippet(arena.allocator(), "mycmd");
     try std.testing.expect(std.mem.indexOf(u8, snippet, "#compdef mycmd") != null);
+    try std.testing.expect(std.mem.indexOf(u8, snippet, "CARAPACE_ZSH_HASH_DIRS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, snippet, "compquote") != null);
 }
 
 test "zsh format output" {
@@ -152,4 +169,6 @@ test "zsh format output" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\x03") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\x02") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "json") != null);
+    // 4-field format: zstyle\x01message\x01noprefix\x01data
+    try std.testing.expect(std.mem.startsWith(u8, out, "default\x01\x01"));
 }

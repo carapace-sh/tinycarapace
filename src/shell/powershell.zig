@@ -45,7 +45,7 @@ pub fn generateInitScript(allocator: std.mem.Allocator, specs: []const spec.Spec
         \\      if ($t.get_Length() -eq 0){{
         \\        $t = '""'
         \\      }}
-        \\      $elems += $t.replace(',', ',')
+        \\      $elems += $t.replace('`+',',', ',')
         \\    }}
         \\
         \\    $completions = @(
@@ -106,7 +106,7 @@ pub fn generateSnippet(allocator: std.mem.Allocator, name: []const u8) ![]const 
         \\      if ($t.get_Length() -eq 0){{
         \\        $t = '""'
         \\      }}
-        \\      $elems += $t.replace(',', ',')
+        \\      $elems += $t.replace('`+',',', ',')
         \\    }}
         \\
         \\    $completions = @(
