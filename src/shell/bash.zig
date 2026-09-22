@@ -102,6 +102,17 @@ pub fn generateSnippet(allocator: std.mem.Allocator, name: []const u8) ![]const 
     return buf.toOwnedSlice(allocator);
 }
 
+/// Strip control characters that would corrupt the line-based protocol
+/// (upstream sanitizer removes \n, \r, \t).
+fn sanitize(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
+    if (std.mem.indexOfAny(u8, s, "\n\r\t") == null) return s;
+    var buf = std.ArrayList(u8).empty;
+    for (s) |c| {
+        if (c != '\n' and c != '\r' and c != '\t') try buf.append(allocator, c);
+    }
+    return buf.toOwnedSlice(allocator);
+}
+
 pub fn formatOutput(allocator: std.mem.Allocator, candidates: []traverse.Candidate, comp_type: ?[]const u8) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
 
@@ -118,10 +129,12 @@ pub fn formatOutput(allocator: std.mem.Allocator, candidates: []traverse.Candida
     const show_desc = comp_type != null and std.mem.eql(u8, comp_type.?, "63");
 
     for (candidates) |c| {
-        if (show_desc and c.description.len > 0) {
-            try buf.print(allocator, "{s} ({s})\n", .{ c.value, c.description });
+        const value = try sanitize(allocator, c.value);
+        const description = try sanitize(allocator, c.description);
+        if (show_desc and description.len > 0) {
+            try buf.print(allocator, "{s} ({s})\n", .{ value, description });
         } else {
-            try buf.print(allocator, "{s}\n", .{c.value});
+            try buf.print(allocator, "{s}\n", .{value});
         }
     }
 

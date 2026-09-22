@@ -219,7 +219,8 @@ const Parser = struct {
                     continue;
                 }
                 const block_indent = self.countIndent();
-                if (block_indent > indent) {
+                // A sequence at the same indent as the key is a valid value (YAML allows it)
+                if (block_indent > indent or (block_indent == indent and self.atSeqEntry())) {
                     self.pos = block_pos;
                     const val = try self.parseBlock(block_indent);
                     try entries.append(self.alloc(), .{ .key = self.dup(key), .value = val });
@@ -469,7 +470,8 @@ const Parser = struct {
                 try entries.append(self.alloc(), .{ .key = self.dup(key), .value = .{ .scalar = "" } });
             } else {
                 const block_indent = self.countIndent();
-                if (block_indent > indent) {
+                // A sequence at the same indent as the key is a valid value
+                if (block_indent > indent or (block_indent == indent and self.atSeqEntry())) {
                     self.pos = block_pos;
                     const val = try self.parseBlock(block_indent);
                     try entries.append(self.alloc(), .{ .key = self.dup(key), .value = val });

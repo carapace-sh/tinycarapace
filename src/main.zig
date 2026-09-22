@@ -200,11 +200,18 @@ fn parseRunArgs(allocator: std.mem.Allocator, src: []const u8) ![]const []const 
         if (inner[i] == '"' or inner[i] == '\'') {
             const quote = inner[i];
             i += 1;
-            const start = i;
+            var buf = std.ArrayList(u8).empty;
             while (i < inner.len and inner[i] != quote) {
-                if (inner[i] == '\\' and i + 1 < inner.len) i += 2 else i += 1;
+                if (inner[i] == '\\' and i + 1 < inner.len) {
+                    i += 1;
+                    try buf.append(allocator, inner[i]);
+                    i += 1;
+                } else {
+                    try buf.append(allocator, inner[i]);
+                    i += 1;
+                }
             }
-            try items.append(allocator, try allocator.dupe(u8, inner[start..i]));
+            try items.append(allocator, buf.items);
             if (i < inner.len) i += 1;
         } else {
             const start = i;

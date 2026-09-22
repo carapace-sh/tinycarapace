@@ -142,17 +142,18 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
             in_flag = null;
             try flag_values.put(f.name(), arg);
             // Handle nargs: consume additional positional args as flag values
+            // (accumulate space-joined so ${C_FLAG_X} sees all values)
             if (f.nargs > 0) {
                 var n: i32 = 1;
                 while (n < f.nargs and i + 1 < args.len) : (n += 1) {
                     i += 1;
-                    try flag_values.put(f.name(), args[i]);
+                    try appendFlagValue(allocator, &flag_values, f.name(), args[i]);
                 }
             } else if (f.nargs < 0) {
                 // nargs = -1 consumes all remaining args
                 while (i + 1 < args.len) {
                     i += 1;
-                    try flag_values.put(f.name(), args[i]);
+                    try appendFlagValue(allocator, &flag_values, f.name(), args[i]);
                 }
             }
             try consumed_flag_names.put(f.name(), {});
@@ -284,7 +285,7 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
         if (resolve.hasNonPosixFlags(current)) {
             return resolve.completeFlagsWithExclusive(allocator, current, value, &consumed_flag_names, root_name, path.items);
         }
-        return resolve.completeShorthandSeriesWithEnv(allocator, io, current, shorthand_part, environ_map);
+        return resolve.completeShorthandSeriesFull(allocator, io, current, shorthand_part, environ_map, &flag_values, positional_args.items);
     }
 
     if (dash) {
@@ -341,6 +342,16 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
     }
 
     return &.{};
+}
+
+/// Store a flag value, accumulating with spaces when set multiple times.
+fn appendFlagValue(allocator: std.mem.Allocator, flag_values: *std.StringHashMap([]const u8), name: []const u8, value: []const u8) !void {
+    if (flag_values.get(name)) |existing| {
+        const joined = try std.fmt.allocPrint(allocator, "{s} {s}", .{ existing, value });
+        try flag_values.put(name, joined);
+    } else {
+        try flag_values.put(name, value);
+    }
 }
 
 /// Implicit subcommand style: upstream highlight level by the group's

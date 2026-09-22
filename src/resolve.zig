@@ -165,14 +165,18 @@ pub fn completeShorthandSeries(allocator: std.mem.Allocator, io: std.Io, cmd: sp
 }
 
 pub fn completeShorthandSeriesWithEnv(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, shorthand_part: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
+    return completeShorthandSeriesFull(allocator, io, cmd, shorthand_part, environ_map, null, &.{});
+}
+
+pub fn completeShorthandSeriesFull(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, shorthand_part: []const u8, environ_map: ?*const std.process.Environ.Map, flag_values: ?*const std.StringHashMap([]const u8), positional_args: []const []const u8) ![]traverse.Candidate {
     var j: usize = 0;
     while (j < shorthand_part.len) : (j += 1) {
         const ch = shorthand_part[j .. j + 1];
         if (cmd.findFlag(ch)) |f| {
             if (f.takes_value and !f.optarg) {
-                if (j == shorthand_part.len - 1) return completeFlagValue(allocator, io, cmd, f, "", environ_map);
+                if (j == shorthand_part.len - 1) return completeFlagValueFull(allocator, io, cmd, f, "", environ_map, flag_values, positional_args);
                 const attached = shorthand_part[j + 1 ..];
-                return completeFlagValueWithPrefix(allocator, io, cmd, f.name(), attached, environ_map);
+                return completeFlagValueWithPrefixFull(allocator, io, cmd, f.name(), attached, environ_map, flag_values, positional_args);
             } else if (f.optarg) {
                 if (j == shorthand_part.len - 1) break;
                 break;
@@ -214,12 +218,12 @@ pub fn completeFlagValueWithPrefix(allocator: std.mem.Allocator, io: std.Io, cmd
     return resolveValuesWithEnv(allocator, io, values, prefix, environ_map, null, &.{});
 }
 
-pub fn completeFlagValueFull(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, f: Flag, value: []const u8, environ_map: ?*const std.process.Environ.Map, flag_values: *const std.StringHashMap([]const u8), positional_args: []const []const u8) ![]traverse.Candidate {
+pub fn completeFlagValueFull(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, f: Flag, value: []const u8, environ_map: ?*const std.process.Environ.Map, flag_values: ?*const std.StringHashMap([]const u8), positional_args: []const []const u8) ![]traverse.Candidate {
     const values = cmd.findFlagCompletion(f.name()) orelse return &.{};
     return resolveValuesWithEnv(allocator, io, values, value, environ_map, flag_values, positional_args);
 }
 
-pub fn completeFlagValueWithPrefixFull(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, flag_name: []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map, flag_values: *const std.StringHashMap([]const u8), positional_args: []const []const u8) ![]traverse.Candidate {
+pub fn completeFlagValueWithPrefixFull(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, flag_name: []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map, flag_values: ?*const std.StringHashMap([]const u8), positional_args: []const []const u8) ![]traverse.Candidate {
     const values = cmd.findFlagCompletion(flag_name) orelse return &.{};
     return resolveValuesWithEnv(allocator, io, values, prefix, environ_map, flag_values, positional_args);
 }

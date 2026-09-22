@@ -777,10 +777,48 @@ fn bridgePowershell(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, a
             }
             // Skip if CompletionText == ToolTip
             if (std.mem.eql(u8, value, desc)) desc = "";
-            try candidates.append(allocator, .{ .value = try allocator.dupe(u8, value), .description = try allocator.dupe(u8, desc) });
+            try candidates.append(allocator, .{
+                .value = try allocator.dupe(u8, try jsonDecode(allocator, value)),
+                .description = try allocator.dupe(u8, try jsonDecode(allocator, desc)),
+            });
         }
     }
     return candidates.toOwnedSlice(allocator);
+}
+
+/// Decode JSON string escapes (", \\, \/, \n, \r, \t, \uXXXX).
+fn jsonDecode(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
+    if (std.mem.indexOfScalar(u8, s, '\\') == null) return s;
+    var buf = std.ArrayList(u8).empty;
+    var i: usize = 0;
+    while (i < s.len) : (i += 1) {
+        if (s[i] != '\\' or i + 1 >= s.len) {
+            try buf.append(allocator, s[i]);
+            continue;
+        }
+        i += 1;
+        switch (s[i]) {
+            'n' => try buf.append(allocator, '\n'),
+            'r' => try buf.append(allocator, '\r'),
+            't' => try buf.append(allocator, '\t'),
+            'u' => {
+                if (i + 4 < s.len) {
+                    const cp = std.fmt.parseInt(u21, s[i + 1 .. i + 5], 16) catch {
+                        try buf.append(allocator, s[i]);
+                        continue;
+                    };
+                    i += 4;
+                    var utf8_buf: [4]u8 = undefined;
+                    const n = std.unicode.utf8Encode(cp, &utf8_buf) catch 1;
+                    try buf.appendSlice(allocator, utf8_buf[0..n]);
+                } else {
+                    try buf.append(allocator, s[i]);
+                }
+            },
+            else => try buf.append(allocator, s[i]),
+        }
+    }
+    return buf.items;
 }
 
 /// Index of the closing quote of a JSON string value (honors backslash escapes).
@@ -893,13 +931,18 @@ fn parseExportJson(allocator: std.mem.Allocator, json: []const u8) ![]traverse.C
         const value = json[val_start .. val_start + val_end_rel];
         var desc: []const u8 = "";
         const after_val = json[val_start + val_end_rel ..];
-        if (std.mem.indexOf(u8, after_val, "\"description\": \"")) |desc_start| {
+        // Scope the description lookup to the current JSON object
+        const obj_end = std.mem.indexOfScalar(u8, after_val, '}') orelse after_val.len;
+        if (std.mem.indexOf(u8, after_val[0..obj_end], "\"description\": \"")) |desc_start| {
             const d_start = desc_start + 16;
             if (jsonStringEnd(after_val[d_start..])) |d_end| {
                 desc = after_val[d_start .. d_start + d_end];
             }
         }
-        try candidates.append(allocator, .{ .value = try allocator.dupe(u8, value), .description = try allocator.dupe(u8, desc) });
+        try candidates.append(allocator, .{
+            .value = try allocator.dupe(u8, try jsonDecode(allocator, value)),
+            .description = try allocator.dupe(u8, try jsonDecode(allocator, desc)),
+        });
         rest = val_start + val_end_rel;
     }
     return candidates.toOwnedSlice(allocator);
