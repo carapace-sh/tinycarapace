@@ -116,9 +116,9 @@ src/
 | `$style(name)` | ✅ |
 | `$tag(name)` | ✅ |
 | `$filter([vals])` | ✅ |
-| `$filterargs` | ❌ (no-op stub — needs positional-arg plumbing into modifiers) |
+| `$filterargs` | ✅ (removes candidates matching a consumed positional arg) |
 | `$retain([vals])` | ✅ |
-| `$shift(n)` | ❌ (no-op stub — needs arg-context in modifier chains) |
+| `$shift(n)` | ✅ (shifts positional-arg context before base expansion) |
 | `$split` / `$splitp` | ✅ |
 | `$suppress(expr)` | ✅ (substring match on message candidates, not regex) |
 | `$uid([scheme, host, opts...])` | ✅ |

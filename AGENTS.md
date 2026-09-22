@@ -270,7 +270,8 @@ Supports:
   `$xdgconfighome`, `$xdgcachehome`, `$gitdir`, `$gitworktree`, `$parent([file, dir])`
 - **Split macros**: `$split(delim)`, `$splitp(delim)`
 - **Bridge macros**: `$bridge.name(cmd, args...)`
-- **Modifier chains**: `base ||| $prefix(...) ||| $suffix(...) ||| ...`
+- **Modifier chains**: `base ||| $prefix(...) ||| $suffix(...) ||| ...` (left-to-right)
+- **Context modifiers**: `$shift(n)` shifts positional args before base expansion, `$filterargs` removes candidates matching consumed positional args
 - **Modifiers**: `$prefix`, `$suffix`, `$nospace`, `$noprefix`, `$style`, `$tag`,
   `$filter`, `$filterargs`, `$retain`, `$shift`, `$suppress`, `$usage`, `$uid`,
   `$split`, `$splitp`

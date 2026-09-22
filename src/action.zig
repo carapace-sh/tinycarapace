@@ -127,7 +127,7 @@ fn applyModifier(allocator: std.mem.Allocator, candidates: []traverse.Candidate,
     return applyModifierWithPrefix(allocator, candidates, modifier, "");
 }
 
-fn applyModifierWithPrefix(allocator: std.mem.Allocator, candidates: []traverse.Candidate, modifier: []const u8, prefix: []const u8) ![]traverse.Candidate {
+pub fn applyModifierWithPrefix(allocator: std.mem.Allocator, candidates: []traverse.Candidate, modifier: []const u8, prefix: []const u8) ![]traverse.Candidate {
     const trimmed = std.mem.trim(u8, modifier, " \t");
     if (trimmed.len < 2 or trimmed[0] != '$') return error.InvalidModifier;
     const paren = std.mem.indexOfScalar(u8, trimmed, '(');
@@ -325,8 +325,9 @@ fn modFilter(allocator: std.mem.Allocator, candidates: []traverse.Candidate, arg
     defer allocator.free(filter_values);
     var result = std.ArrayList(traverse.Candidate).empty;
     for (candidates) |c| {
+        // upstream Filter removes values on exact match
         var should_remove = false;
-        for (filter_values) |fv| { if (std.mem.indexOf(u8, c.value, fv) != null) { should_remove = true; break; } }
+        for (filter_values) |fv| { if (std.mem.eql(u8, c.value, fv)) { should_remove = true; break; } }
         if (!should_remove) try result.append(allocator, c);
     }
     return result.toOwnedSlice(allocator);
@@ -343,7 +344,8 @@ fn modRetain(allocator: std.mem.Allocator, candidates: []traverse.Candidate, arg
     defer allocator.free(retain_values);
     var result = std.ArrayList(traverse.Candidate).empty;
     for (candidates) |c| {
-        for (retain_values) |rv| { if (std.mem.indexOf(u8, c.value, rv) != null) { try result.append(allocator, c); break; } }
+        // upstream Retain keeps values on exact match
+        for (retain_values) |rv| { if (std.mem.eql(u8, c.value, rv)) { try result.append(allocator, c); break; } }
     }
     return result.toOwnedSlice(allocator);
 }

@@ -4,52 +4,119 @@ const Flag = @import("flag.zig").Flag;
 const action = @import("action.zig");
 const traverse = @import("traverse.zig");
 
-/// Resolve a single raw value string, append duplicated candidates that match prefix.
-fn resolveSingleValue(allocator: std.mem.Allocator, io: std.Io, candidates: *std.ArrayList(traverse.Candidate), raw: []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) !void {
-    // Modifier chains also apply to static bases ("a ||| $style(...)"),
-    // so anything containing a chain separator goes through resolveMacro.
-    if (raw.len > 0 and (raw[0] == '$' or std.mem.indexOf(u8, raw, " ||| ") != null)) {
-        if (std.mem.startsWith(u8, raw, "$spec")) {
-            const spec_candidates = traverse.resolveSpec(allocator, io, raw, prefix, environ_map);
-            defer allocator.free(spec_candidates);
-            for (spec_candidates) |c| {
-                if (std.mem.startsWith(u8, c.value, prefix)) {
-                    try candidates.append(allocator, .{
-                        .value = try allocator.dupe(u8, c.value),
-                        .description = try allocator.dupe(u8, c.description),
-                        .style = try allocator.dupe(u8, c.style),
-                        .nospace = c.nospace,
-                        .tag = try allocator.dupe(u8, c.tag),
-                        .uid = try allocator.dupe(u8, c.uid),
-                    });
-                }
-            }
-        } else {
-            const macro_candidates = try action.resolveMacro(allocator, io, raw, prefix, environ_map);
-            defer allocator.free(macro_candidates);
-            for (macro_candidates) |c| {
-                if (std.mem.startsWith(u8, c.value, prefix)) {
-                    try candidates.append(allocator, .{
-                        .value = try allocator.dupe(u8, c.value),
-                        .description = try allocator.dupe(u8, c.description),
-                        .style = try allocator.dupe(u8, c.style),
-                        .nospace = c.nospace,
-                        .tag = try allocator.dupe(u8, c.tag),
-                        .uid = try allocator.dupe(u8, c.uid),
-                    });
-                }
-            }
-        }
-    } else {
-        const parsed = traverse.splitValue(raw);
-        if (std.mem.startsWith(u8, parsed.value, prefix)) {
+/// Append candidates that match prefix, duplicating strings into the output list.
+fn appendMatching(allocator: std.mem.Allocator, candidates: *std.ArrayList(traverse.Candidate), resolved: []const traverse.Candidate, prefix: []const u8) !void {
+    for (resolved) |c| {
+        if (std.mem.startsWith(u8, c.value, prefix)) {
             try candidates.append(allocator, .{
-                .value = try allocator.dupe(u8, parsed.value),
-                .description = try allocator.dupe(u8, parsed.description),
-                .style = try allocator.dupe(u8, parsed.style),
+                .value = try allocator.dupe(u8, c.value),
+                .description = try allocator.dupe(u8, c.description),
+                .style = try allocator.dupe(u8, c.style),
+                .nospace = c.nospace,
+                .tag = try allocator.dupe(u8, c.tag),
+                .uid = try allocator.dupe(u8, c.uid),
             });
         }
     }
+}
+
+/// Resolve a single raw value string, append duplicated candidates that match prefix.
+/// Handles modifier chains, including context modifiers that affect how the base
+/// action is resolved: $shift(n) drops the first n consumed positional args and
+/// $filterargs removes candidates matching a consumed positional arg.
+fn resolveSingleValue(allocator: std.mem.Allocator, io: std.Io, candidates: *std.ArrayList(traverse.Candidate), raw: []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map, flag_values: ?*const std.StringHashMap([]const u8), positional_args: []const []const u8) !void {
+    // Split modifier chain: "base ||| mod1 ||| mod2"
+    var base_raw = raw;
+    var mods = std.ArrayList([]const u8).empty;
+    var args = positional_args;
+    var filterargs = false;
+
+    if (std.mem.indexOf(u8, raw, " ||| ")) |first_sep| {
+        base_raw = std.mem.trim(u8, raw[0..first_sep], " \t");
+        var rest = raw[first_sep + 5 ..];
+        while (std.mem.indexOf(u8, rest, " ||| ")) |sep| {
+            try mods.append(allocator, std.mem.trim(u8, rest[0..sep], " \t"));
+            rest = rest[sep + 5 ..];
+        }
+        try mods.append(allocator, std.mem.trim(u8, rest, " \t"));
+
+        // Extract context modifiers (they modify resolution, not candidates)
+        var kept = std.ArrayList([]const u8).empty;
+        for (mods.items) |m| {
+            if (std.mem.eql(u8, m, "$filterargs")) {
+                filterargs = true;
+            } else if (std.mem.startsWith(u8, m, "$shift(") and std.mem.endsWith(u8, m, ")")) {
+                const n = std.fmt.parseInt(usize, m[7 .. m.len - 1], 10) catch 0;
+                args = if (n >= args.len) args[args.len..] else args[n..];
+            } else {
+                try kept.append(allocator, m);
+            }
+        }
+        mods.deinit(allocator);
+        mods = kept;
+    }
+
+    // Expand variables in the base and modifiers with the (shifted) context
+    const expanded_base = if (flag_values) |fv|
+        try traverse.expandVariables(allocator, base_raw, fv, args, prefix)
+    else
+        try allocator.dupe(u8, base_raw);
+    defer allocator.free(expanded_base);
+
+    // Resolve base ($spec / macro / flow list / static value)
+    const is_flow_list = expanded_base.len > 1 and expanded_base[0] == '[' and expanded_base[expanded_base.len - 1] == ']';
+    var resolved = blk: {
+        if (expanded_base.len > 0 and (expanded_base[0] == '$' or is_flow_list)) {
+            if (std.mem.startsWith(u8, expanded_base, "$spec")) {
+                break :blk try allocator.dupe(traverse.Candidate, traverse.resolveSpec(allocator, io, expanded_base, prefix, environ_map));
+            }
+            break :blk try action.resolveMacro(allocator, io, expanded_base, prefix, environ_map);
+        }
+        const parsed = traverse.splitValue(expanded_base);
+        var one = try allocator.alloc(traverse.Candidate, 1);
+        one[0] = .{
+            .value = try allocator.dupe(u8, parsed.value),
+            .description = try allocator.dupe(u8, parsed.description),
+            .style = try allocator.dupe(u8, parsed.style),
+        };
+        break :blk one;
+    };
+
+    // Apply candidate modifiers in order
+    for (mods.items) |m| {
+        const expanded_mod = if (flag_values) |fv|
+            try traverse.expandVariables(allocator, m, fv, args, prefix)
+        else
+            try allocator.dupe(u8, m);
+        defer allocator.free(expanded_mod);
+
+        const next = action.applyModifierWithPrefix(allocator, resolved, expanded_mod, prefix) catch |err| {
+            allocator.free(resolved);
+            return err;
+        };
+        allocator.free(resolved);
+        resolved = next;
+    }
+
+    // $filterargs: remove candidates whose value equals a consumed positional arg
+    if (filterargs) {
+        var filtered = std.ArrayList(traverse.Candidate).empty;
+        for (resolved) |c| {
+            var excluded = false;
+            for (args) |a| {
+                if (std.mem.eql(u8, c.value, a)) {
+                    excluded = true;
+                    break;
+                }
+            }
+            if (!excluded) try filtered.append(allocator, c);
+        }
+        allocator.free(resolved);
+        resolved = try filtered.toOwnedSlice(allocator);
+    }
+
+    try appendMatching(allocator, candidates, resolved, prefix);
+    allocator.free(resolved);
 }
 
 /// Resolve a list of raw completion values into candidates.
@@ -61,13 +128,7 @@ pub fn resolveValues(allocator: std.mem.Allocator, io: std.Io, values: []const [
 pub fn resolveValuesWithEnv(allocator: std.mem.Allocator, io: std.Io, values: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map, flag_values: ?*const std.StringHashMap([]const u8), positional_args: []const []const u8) ![]traverse.Candidate {
     var candidates = std.ArrayList(traverse.Candidate).empty;
     for (values) |v| {
-        if (flag_values) |fv| {
-            const expanded = try traverse.expandVariables(allocator, v, fv, positional_args, prefix);
-            defer allocator.free(expanded);
-            try resolveSingleValue(allocator, io, &candidates, expanded, prefix, environ_map);
-        } else {
-            try resolveSingleValue(allocator, io, &candidates, v, prefix, environ_map);
-        }
+        try resolveSingleValue(allocator, io, &candidates, v, prefix, environ_map, flag_values, positional_args);
     }
     return candidates.toOwnedSlice(allocator);
 }
@@ -226,4 +287,39 @@ pub fn completeFlagValueFull(allocator: std.mem.Allocator, io: std.Io, cmd: spec
 pub fn completeFlagValueWithPrefixFull(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, flag_name: []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map, flag_values: ?*const std.StringHashMap([]const u8), positional_args: []const []const u8) ![]traverse.Candidate {
     const values = cmd.findFlagCompletion(flag_name) orelse return &.{};
     return resolveValuesWithEnv(allocator, io, values, prefix, environ_map, flag_values, positional_args);
+}
+test "shift modifier drops consumed positional args for base expansion" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var flag_values = std.StringHashMap([]const u8).init(std.testing.allocator);
+    defer flag_values.deinit();
+    const args = [_][]const u8{ "first", "second" };
+    // after $shift(1), ${C_ARG0} refers to "second"
+    const values = [_][]const u8{"${C_ARG0} ||| $shift(1)"};
+    const c = try resolveValuesWithEnv(arena.allocator(), std.testing.io, &values, "", null, &flag_values, &args);
+    try std.testing.expectEqual(@as(usize, 1), c.len);
+    try std.testing.expectEqualStrings("second", c[0].value);
+}
+
+test "filterargs removes candidates matching consumed positional args" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const args = [_][]const u8{"one"};
+    const values = [_][]const u8{"[one, two, three] ||| $filterargs"};
+    const c = try resolveValuesWithEnv(arena.allocator(), std.testing.io, &values, "", null, null, &args);
+    try std.testing.expectEqual(@as(usize, 2), c.len);
+    try std.testing.expectEqualStrings("two", c[0].value);
+    try std.testing.expectEqualStrings("three", c[1].value);
+}
+
+test "filterargs respects shift" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // after shift(1), the consumed arg is "second" — "first" survives
+    const args = [_][]const u8{ "first", "second" };
+    const values = [_][]const u8{"[first, second, third] ||| $shift(1) ||| $filterargs"};
+    const c = try resolveValuesWithEnv(arena.allocator(), std.testing.io, &values, "", null, null, &args);
+    try std.testing.expectEqual(@as(usize, 2), c.len);
+    try std.testing.expectEqualStrings("first", c[0].value);
+    try std.testing.expectEqualStrings("third", c[1].value);
 }
