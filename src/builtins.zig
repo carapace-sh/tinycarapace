@@ -105,20 +105,46 @@ pub fn resolveMessage(allocator: std.mem.Allocator, macro: []const u8) ![]traver
 }
 
 /// Parse "$list(delim)" or "$uniquelist(delim)" — complete the last segment of the current value.
-pub fn resolveList(allocator: std.mem.Allocator, macro: []const u8, prefix: []const u8, _: bool) ![]traverse.Candidate {
+/// "$uniquelist" suppresses the segment when it already appears earlier in the current value.
+pub fn resolveList(allocator: std.mem.Allocator, macro: []const u8, prefix: []const u8, unique: bool) ![]traverse.Candidate {
     var delim: []const u8 = ",";
-    if (macro.len > 6 and macro[5] == '(') {
-        if (macro[macro.len - 1] == ')') {
-            const args = macro[6 .. macro.len - 1];
+    if (macro.len > 0 and macro[macro.len - 1] == ')') {
+        if (std.mem.indexOfScalar(u8, macro, '(')) |o| {
+            const args = macro[o + 1 .. macro.len - 1];
             if (args.len > 0) delim = args;
         }
     }
     const last_seg = if (std.mem.lastIndexOf(u8, prefix, delim)) |last| prefix[last + delim.len ..] else prefix;
     var candidates = std.ArrayList(traverse.Candidate).empty;
     if (last_seg.len > 0) {
-        try candidates.append(allocator, .{ .value = try allocator.dupe(u8, last_seg) });
+        if (unique and lastSegmentUsed(prefix, delim, last_seg)) {
+            return candidates.toOwnedSlice(allocator);
+        }
+        try candidates.append(allocator, .{ .value = try allocator.dupe(u8, last_seg), .nospace = true });
     }
     return candidates.toOwnedSlice(allocator);
+}
+
+fn lastSegmentUsed(prefix: []const u8, delim: []const u8, last_seg: []const u8) bool {
+    var it = std.mem.splitSequence(u8, prefix, delim);
+    var i: usize = 0;
+    var last_index: usize = 0;
+    var found_last = false;
+    while (it.next()) |seg| : (i += 1) {
+        if (std.mem.eql(u8, seg, last_seg)) {
+            last_index = i;
+            found_last = true;
+        }
+    }
+    if (!found_last) return false;
+    // Any occurrence of the segment before its last occurrence means it's used
+    it = std.mem.splitSequence(u8, prefix, delim);
+    i = 0;
+    while (it.next()) |seg| : (i += 1) {
+        if (i >= last_index) break;
+        if (std.mem.eql(u8, seg, last_seg)) return true;
+    }
+    return false;
 }
 
 /// Parse "$multiparts([delim])" — like list but with nospace semantics.

@@ -10,7 +10,7 @@ It reads the same YAML spec format and provides shell completion.
 
 | Concern | Go (carapace-spec) | Zig (tinycarapace) |
 |---------|--------------------|--------------------|
-| Binary size (static, stripped) | ~15 MB | **<500 KB** |
+| Binary size (static, stripped) | ~15 MB | **~830 KB** |
 | Runtime | Go runtime + GC | None (bare metal) |
 | YAML parsing | `gopkg.in/yaml.v3` (~50k LOC transitive) | Hand-written subset parser (~700 LOC) |
 | Cross-compile | `GOOS=linux GOARCH=amd64` | `zig build -Dtarget=x86_64-linux-musl` |
@@ -112,17 +112,17 @@ src/
 | `$prefix(text)` | ✅ |
 | `$suffix(text)` | ✅ |
 | `$nospace(chars)` | ✅ |
-| `$noprefix(chars)` | ✅ |
+| `$noprefix(chars)` | ✅ (segment-based, no regex) |
 | `$style(name)` | ✅ |
 | `$tag(name)` | ✅ |
 | `$filter([vals])` | ✅ |
-| `$filterargs` | ✅ |
+| `$filterargs` | ❌ (no-op stub — needs positional-arg plumbing into modifiers) |
 | `$retain([vals])` | ✅ |
-| `$shift(n)` | ✅ |
+| `$shift(n)` | ❌ (no-op stub — needs arg-context in modifier chains) |
 | `$split` / `$splitp` | ✅ |
-| `$suppress(regex)` | ✅ |
+| `$suppress(expr)` | ✅ (substring match on message candidates, not regex) |
 | `$uid([scheme, host, opts...])` | ✅ |
-| `$uniquelist(delim)` | ✅ (handled by `$list`) |
+| `$uniquelist(delim)` | ✅ (suppresses segments already used in the prefix) |
 | `$usage(usage)` | ✅ |
 
 ### Shell support
@@ -418,5 +418,5 @@ zig build -Dtarget=aarch64-linux-musl    # Cross-compile
 | Binary | Approx size |
 |--------|------------|
 | carapace-spec (Go) | ~15 MB |
-| **tinycarapace** (Zig, ReleaseFast, stripped) | **<500 KB** |
+| **tinycarapace** (Zig, ReleaseFast, stripped) | **~830 KB** |
 | tinycarapace (UPX compressed) | **<200 KB** |

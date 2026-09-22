@@ -70,9 +70,24 @@ pub const Command = struct {
         for (self.persistent_flags) |f| {
             if (f.matches(name)) return f;
         }
-        // Walk up parent chain for inherited persistent flags
+        // Walk up parent chain for inherited flags: only persistent flags are inherited
         if (self.parent) |p| {
-            return p.findFlag(name);
+            for (p.persistent_flags) |f| {
+                if (f.matches(name)) return f;
+            }
+            return findPersistentFlagInAncestors(p.parent, name);
+        }
+        return null;
+    }
+
+    /// Walk ancestors looking only at persistent flags.
+    fn findPersistentFlagInAncestors(parent: ?*const Command, name: []const u8) ?Flag {
+        var current = parent;
+        while (current) |cmd| {
+            for (cmd.persistent_flags) |f| {
+                if (f.matches(name)) return f;
+            }
+            current = cmd.parent;
         }
         return null;
     }
@@ -82,8 +97,7 @@ pub const Command = struct {
             if (std.mem.eql(u8, fc.name, name)) return fc.values;
         }
         if (self.parent) |p| {
-            return p.findFlagCompletion(name);
-        }
+            return p.findFlagCompletion(name);        }
         return null;
     }
 };
@@ -173,9 +187,10 @@ pub fn findSpec(specs: []SpecInfo, name: []const u8) ?SpecInfo {
 }
 
 pub fn loadSpec(allocator: std.mem.Allocator, src: []const u8) !Command {
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    const val = try yaml.parse(arena.allocator(), src);
-    return decodeCommand(arena.allocator(), val);
+    // Parse and decode directly into the caller's allocator (usually an arena
+    // owned by the caller); no intermediate arena is created.
+    const val = try yaml.parse(allocator, src);
+    return decodeCommand(allocator, val);
 }
 
 fn decodeCommand(allocator: std.mem.Allocator, val: yaml.Value) !Command {
@@ -221,10 +236,14 @@ fn decodeCommandWithParent(allocator: std.mem.Allocator, val: yaml.Value, parent
     if (val.getList("exclusiveflags")) |excl| {
         var arr = try allocator.alloc([]const []const u8, excl.len);
         for (excl, 0..) |group_val, i| {
-            const list = group_val.list;
-            var inner = try allocator.alloc([]const u8, list.len);
-            for (list, 0..) |item, j| inner[j] = item.scalar;
-            arr[i] = inner;
+            arr[i] = switch (group_val) {
+                .list => |list| blk: {
+                    var inner = try allocator.alloc([]const u8, list.len);
+                    for (list, 0..) |item, j| inner[j] = item.scalar;
+                    break :blk inner;
+                },
+                else => &.{},
+            };
         }
         cmd_ptr.exclusive_flags = arr;
     }
@@ -313,27 +332,50 @@ fn decodeCompletion(allocator: std.mem.Allocator, val: yaml.Value) !Command.Comp
     if (val.getList("positional")) |pos| {
         var arr = try allocator.alloc([]const []const u8, pos.len);
         for (pos, 0..) |p, i| {
-            const list = p.list;
-            var inner = try allocator.alloc([]const u8, list.len);
-            for (list, 0..) |item, j| inner[j] = item.scalar;
-            arr[i] = inner;
+            arr[i] = switch (p) {
+                .list => |list| blk: {
+                    var inner = try allocator.alloc([]const u8, list.len);
+                    for (list, 0..) |item, j| inner[j] = item.scalar;
+                    break :blk inner;
+                },
+                // A scalar entry is a single action string (e.g. a chained
+                // "[a, b] ||| $style(...)" expression).
+                .scalar => |s| blk: {
+                    var inner = try allocator.alloc([]const u8, 1);
+                    inner[0] = s;
+                    break :blk inner;
+                },
+                else => &.{} ,
+            };
         }
         comp.positional = arr;
     }
 
     if (val.getList("positionalany")) |pos| {
         var arr = try allocator.alloc([]const u8, pos.len);
-        for (pos, 0..) |p, i| arr[i] = p.scalar;
+        for (pos, 0..) |p, i| arr[i] = switch (p) {
+            .scalar => |s| s,
+            else => "",
+        };
         comp.positionalany = arr;
     }
 
     if (val.getList("dash")) |dash| {
         var arr = try allocator.alloc([]const []const u8, dash.len);
         for (dash, 0..) |d, i| {
-            const list = d.list;
-            var inner = try allocator.alloc([]const u8, list.len);
-            for (list, 0..) |item, j| inner[j] = item.scalar;
-            arr[i] = inner;
+            arr[i] = switch (d) {
+                .list => |list| blk: {
+                    var inner = try allocator.alloc([]const u8, list.len);
+                    for (list, 0..) |item, j| inner[j] = item.scalar;
+                    break :blk inner;
+                },
+                .scalar => |s| blk: {
+                    var inner = try allocator.alloc([]const u8, 1);
+                    inner[0] = s;
+                    break :blk inner;
+                },
+                else => &.{},
+            };
         }
         comp.dash = arr;
     }

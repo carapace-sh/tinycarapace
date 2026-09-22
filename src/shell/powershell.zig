@@ -15,6 +15,15 @@ fn sanitize(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
     return buf.toOwnedSlice(allocator);
 }
 
+/// Escape a command name for use inside PowerShell single quotes.
+fn escapeName(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
+    var buf = std.ArrayList(u8).empty;
+    for (name) |c| {
+        if (c == '\'') try buf.appendSlice(allocator, "''") else try buf.append(allocator, c);
+    }
+    return buf.toOwnedSlice(allocator);
+}
+
 pub fn generateInitScript(allocator: std.mem.Allocator, specs: []const spec.SpecInfo) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     const exe = "carapace-tiny";
@@ -65,10 +74,11 @@ pub fn generateInitScript(allocator: std.mem.Allocator, specs: []const spec.Spec
     , .{ exe, exe });
 
     for (specs) |s| {
+        const name = try escapeName(allocator, s.name);
         try buf.print(allocator,
             \\Register-ArgumentCompleter -Native -ScriptBlock (Get-Item "Function:_carapace_completer").ScriptBlock -CommandName '{s}' # ,'{s}.exe'
             \\
-        , .{ s.name, s.name });
+        , .{ name, s.name });
     }
 
     return buf.toOwnedSlice(allocator);
@@ -125,7 +135,7 @@ pub fn generateSnippet(allocator: std.mem.Allocator, name: []const u8) ![]const 
         \\
         \\Register-ArgumentCompleter -Native -ScriptBlock (Get-Item "Function:_{s}_completion").ScriptBlock -CommandName '{s}' # ,'{s}.exe'
         \\
-    , .{ cmd_sanitized, exe, name, exe, name, cmd_sanitized, name, name });
+    , .{ cmd_sanitized, exe, name, exe, name, cmd_sanitized, try escapeName(allocator, name), name });
 
     return buf.toOwnedSlice(allocator);
 }

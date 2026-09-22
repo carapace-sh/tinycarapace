@@ -6,7 +6,9 @@ const traverse = @import("traverse.zig");
 
 /// Resolve a single raw value string, append duplicated candidates that match prefix.
 fn resolveSingleValue(allocator: std.mem.Allocator, io: std.Io, candidates: *std.ArrayList(traverse.Candidate), raw: []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) !void {
-    if (raw.len > 0 and raw[0] == '$') {
+    // Modifier chains also apply to static bases ("a ||| $style(...)"),
+    // so anything containing a chain separator goes through resolveMacro.
+    if (raw.len > 0 and (raw[0] == '$' or std.mem.indexOf(u8, raw, " ||| ") != null)) {
         if (std.mem.startsWith(u8, raw, "$spec")) {
             const spec_candidates = traverse.resolveSpec(allocator, io, raw, prefix, environ_map);
             defer allocator.free(spec_candidates);
@@ -86,19 +88,26 @@ pub fn completeFlags(allocator: std.mem.Allocator, cmd: spec.Command, prefix: []
 
 pub fn completeFlagsWithExclusive(allocator: std.mem.Allocator, cmd: spec.Command, prefix: []const u8, consumed_flags: ?*const std.StringHashMap(void)) ![]traverse.Candidate {
     var candidates = std.ArrayList(traverse.Candidate).empty;
-    var current = cmd;
-    while (true) {
-        for (current.flags) |f| {
+    // Own local + persistent flags
+    for (cmd.flags) |f| {
+        if (f.hidden) continue;
+        if (consumed_flags) |cf| { if (isFlagExcluded(cmd, f, cf)) continue; }
+        try addFlagCandidate(allocator, &candidates, f, prefix);
+    }
+    for (cmd.persistent_flags) |f| {
+        if (f.hidden) continue;
+        if (consumed_flags) |cf| { if (isFlagExcluded(cmd, f, cf)) continue; }
+        try addFlagCandidate(allocator, &candidates, f, prefix);
+    }
+    // Ancestors: only persistent flags are inherited
+    var current = cmd.parent;
+    while (current) |p| {
+        for (p.persistent_flags) |f| {
             if (f.hidden) continue;
-            if (consumed_flags) |cf| { if (isFlagExcluded(current, f, cf)) continue; }
+            if (consumed_flags) |cf| { if (isFlagExcluded(p.*, f, cf)) continue; }
             try addFlagCandidate(allocator, &candidates, f, prefix);
         }
-        for (current.persistent_flags) |f| {
-            if (f.hidden) continue;
-            if (consumed_flags) |cf| { if (isFlagExcluded(current, f, cf)) continue; }
-            try addFlagCandidate(allocator, &candidates, f, prefix);
-        }
-        if (current.parent) |p| { current = p.*; } else break;
+        current = p.parent;
     }
     return candidates.toOwnedSlice(allocator);
 }

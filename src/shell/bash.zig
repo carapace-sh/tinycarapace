@@ -2,6 +2,23 @@ const std = @import("std");
 const spec = @import("../spec.zig");
 const traverse = @import("../traverse.zig");
 
+/// Quote a command name for use as a bash argument.
+fn quoteName(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
+    var buf = std.ArrayList(u8).empty;
+    try buf.append(allocator, '"');
+    for (name) |c| {
+        switch (c) {
+            '\\', '"', '$', '`' => {
+                try buf.append(allocator, '\\');
+                try buf.append(allocator, c);
+            },
+            else => try buf.append(allocator, c),
+        }
+    }
+    try buf.append(allocator, '"');
+    return buf.toOwnedSlice(allocator);
+}
+
 pub fn generateInitScript(allocator: std.mem.Allocator, specs: []const spec.SpecInfo) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     const exe = "carapace-tiny";
@@ -41,7 +58,7 @@ pub fn generateInitScript(allocator: std.mem.Allocator, specs: []const spec.Spec
 
     try buf.appendSlice(allocator, "complete -o noquote -F _carapace_completer");
     for (specs) |s| {
-        try buf.print(allocator, " {s}", .{s.name});
+        try buf.print(allocator, " {s}", .{try quoteName(allocator, s.name)});
     }
     try buf.appendSlice(allocator, "\n\n");
 
@@ -80,7 +97,7 @@ pub fn generateSnippet(allocator: std.mem.Allocator, name: []const u8) ![]const 
         \\}}
         \\complete -o noquote -F _{s}_completion {s}
         \\
-    , .{ name, exe, name, exe, name, exe, name, name, name });
+    , .{ name, exe, name, exe, name, exe, name, name, try quoteName(allocator, name) });
 
     return buf.toOwnedSlice(allocator);
 }

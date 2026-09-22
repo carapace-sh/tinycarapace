@@ -108,6 +108,7 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
     var in_flag: ?Flag = null;
     var positional_count: usize = 0;
     var dash = false;
+    var dash_count: usize = 0; // positionals consumed after "--"
     var flag_parsing = true;
     var flag_values = std.StringHashMap([]const u8).init(allocator);
     var consumed_flag_names = std.StringHashMap(void).init(allocator); // for exclusiveflags
@@ -160,6 +161,8 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
             continue;
         }
 
+        if (dash) dash_count += 1;
+
         if (flag_parsing and arg.len > 0 and arg[0] == '-') {
             if (arg.len > 1 and arg[1] == '-') {
                 if (std.mem.indexOfScalar(u8, arg, '=')) |eq| {
@@ -201,8 +204,9 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
                             try consumed_flag_names.put(f.name(), {});
                             if (f.takes_value and !f.optarg) {
                                 if (j < name.len - 1) {
-                                    // Rest of string is attached value
-                                    const attached = name[j + 1 ..];
+                                    // Rest of string is attached value (strip leading '=')
+                                    var attached = name[j + 1 ..];
+                                    if (attached.len > 0 and attached[0] == '=') attached = attached[1..];
                                     try flag_values.put(f.name(), attached);
                                 } else {
                                     in_flag = f;
@@ -227,7 +231,7 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
             if (current.findSubcommand(arg)) |sub| {
                 current = sub;
                 positional_count = 0;
-                if (current.parsing == .disabled) flag_parsing = false;
+                flag_parsing = current.parsing != .disabled;
                 continue;
             }
         }
@@ -279,8 +283,11 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
     }
 
     if (dash) {
-        if (positional_count < current.completion.dash.len) {
-            const pos = current.completion.dash[positional_count];
+        // Index dash completions by positionals consumed after "--" (the
+        // partial word being completed was already stripped from args).
+        const dash_idx = dash_count;
+        if (dash_idx < current.completion.dash.len) {
+            const pos = current.completion.dash[dash_idx];
             return resolve.resolveValuesWithEnv(allocator, io, pos, value, environ_map, &flag_values, positional_args.items);
         }
         if (current.completion.dashany.len > 0) {

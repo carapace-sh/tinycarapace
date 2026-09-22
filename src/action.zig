@@ -18,9 +18,9 @@ pub fn resolveMacro(allocator: std.mem.Allocator, io: std.Io, macro: []const u8,
         defer allocator.free(parts.items);
 
         var candidates = try resolveMacro(allocator, io, parts.items[0], prefix, environ_map);
-        var i: usize = parts.items.len - 1;
-        while (i >= 1) : (i -= 1) {
-            const mod = applyModifier(allocator, candidates, parts.items[i]) catch |err| {
+        var i: usize = 1;
+        while (i < parts.items.len) : (i += 1) {
+            const mod = applyModifierWithPrefix(allocator, candidates, parts.items[i], prefix) catch |err| {
                 allocator.free(candidates);
                 return err;
             };
@@ -92,6 +92,21 @@ pub fn resolveMacro(allocator: std.mem.Allocator, io: std.Io, macro: []const u8,
         }
     }
 
+    // Flow list base: "[a, b] ||| $mod(...)" — parse the list, then apply modifiers
+    if (macro.len > 1 and macro[0] == '[' and macro[macro.len - 1] == ']') {
+        const items = try builtins.parseFlowList(allocator, macro);
+        var candidates = std.ArrayList(traverse.Candidate).empty;
+        for (items) |item| {
+            const parsed = traverse.splitValue(item);
+            try candidates.append(allocator, .{
+                .value = try allocator.dupe(u8, parsed.value),
+                .description = try allocator.dupe(u8, parsed.description),
+                .style = try allocator.dupe(u8, parsed.style),
+            });
+        }
+        return candidates.toOwnedSlice(allocator);
+    }
+
     // Plain static value
     const val = std.mem.trim(u8, macro, " \t");
     if (val.len > 0) {
@@ -109,6 +124,10 @@ pub fn resolveMacro(allocator: std.mem.Allocator, io: std.Io, macro: []const u8,
 
 /// Apply a modifier (e.g. "$prefix(text)") to a list of candidates.
 fn applyModifier(allocator: std.mem.Allocator, candidates: []traverse.Candidate, modifier: []const u8) ![]traverse.Candidate {
+    return applyModifierWithPrefix(allocator, candidates, modifier, "");
+}
+
+fn applyModifierWithPrefix(allocator: std.mem.Allocator, candidates: []traverse.Candidate, modifier: []const u8, prefix: []const u8) ![]traverse.Candidate {
     const trimmed = std.mem.trim(u8, modifier, " \t");
     if (trimmed.len < 2 or trimmed[0] != '$') return error.InvalidModifier;
     const paren = std.mem.indexOfScalar(u8, trimmed, '(');
@@ -130,6 +149,9 @@ fn applyModifier(allocator: std.mem.Allocator, candidates: []traverse.Candidate,
     if (std.mem.eql(u8, name, "uid")) return modUid(allocator, candidates, args);
     if (std.mem.eql(u8, name, "split")) return modSplit(allocator, candidates, args);
     if (std.mem.eql(u8, name, "splitp")) return modSplitp(allocator, candidates, args);
+    if (std.mem.eql(u8, name, "list")) return modList(allocator, candidates, args, prefix, false);
+    if (std.mem.eql(u8, name, "uniquelist")) return modList(allocator, candidates, args, prefix, true);
+    if (std.mem.eql(u8, name, "multiparts")) return modList(allocator, candidates, args, prefix, false);
 
     // Unknown modifier — pass through
     var result = try allocator.alloc(traverse.Candidate, candidates.len);
@@ -178,7 +200,108 @@ fn modNospace(allocator: std.mem.Allocator, candidates: []traverse.Candidate, ch
 }
 
 fn modNoprefix(allocator: std.mem.Allocator, candidates: []traverse.Candidate, chars: []const u8) ![]traverse.Candidate {
-    return modNospace(allocator, candidates, chars);
+    // Upstream NoPrefix: values containing one of the chars are matched and
+    // inserted as the segment after the last occurrence of any char.
+    var result = std.ArrayList(traverse.Candidate).empty;
+    for (candidates) |c| {
+        var last_pos: ?usize = null;
+        for (chars) |ch| {
+            if (std.mem.lastIndexOfScalar(u8, c.value, ch)) |pos| {
+                if (last_pos == null or pos > last_pos.?) last_pos = pos;
+            }
+        }
+        if (last_pos) |pos| {
+            try result.append(allocator, .{
+                .value = try allocator.dupe(u8, c.value[pos + 1 ..]),
+                .description = try allocator.dupe(u8, c.description),
+                .style = try allocator.dupe(u8, c.style),
+                .nospace = true,
+                .tag = try allocator.dupe(u8, c.tag),
+                .uid = try allocator.dupe(u8, c.uid),
+            });
+        } else {
+            try result.append(allocator, .{
+                .value = try allocator.dupe(u8, c.value),
+                .description = try allocator.dupe(u8, c.description),
+                .style = try allocator.dupe(u8, c.style),
+                .nospace = c.nospace,
+                .tag = try allocator.dupe(u8, c.tag),
+                .uid = try allocator.dupe(u8, c.uid),
+            });
+        }
+    }
+    return result.toOwnedSlice(allocator);
+}
+
+/// $list(delim)/$uniquelist(delim)/$multiparts([delim]) — complete the segment
+/// of each candidate value at the position indicated by the current prefix.
+fn modList(allocator: std.mem.Allocator, candidates: []traverse.Candidate, args: []const u8, prefix: []const u8, unique: bool) ![]traverse.Candidate {
+    var delim: []const u8 = if (args.len > 0) args else ",";
+    if (std.mem.startsWith(u8, delim, "[") and std.mem.endsWith(u8, delim, "]")) {
+        delim = delim[1 .. delim.len - 1];
+        if (delim.len == 0) delim = "/";
+    }
+
+    // The segment being completed is determined by the delimiter count in the prefix
+    const part_index = blk: {
+        var n: usize = 0;
+        var rest = prefix;
+        while (std.mem.indexOf(u8, rest, delim)) |pos| {
+            n += 1;
+            rest = rest[pos + delim.len ..];
+        }
+        break :blk n;
+    };
+
+    // Segments of the prefix before the one being completed (for uniquelist dedup)
+    var used = std.ArrayList([]const u8).empty;
+    if (unique) {
+        var it = std.mem.splitSequence(u8, prefix, delim);
+        var idx: usize = 0;
+        while (it.next()) |seg| : (idx += 1) {
+            if (idx >= part_index) break;
+            try used.append(allocator, seg);
+        }
+    }
+
+    var result = std.ArrayList(traverse.Candidate).empty;
+    for (candidates) |c| {
+        var it = std.mem.splitSequence(u8, c.value, delim);
+        var idx: usize = 0;
+        var joined = std.ArrayList(u8).empty;
+        var matched = false;
+        while (it.next()) |seg| : (idx += 1) {
+            if (idx > part_index) break;
+            if (idx > 0) try joined.appendSlice(allocator, delim);
+            try joined.appendSlice(allocator, seg);
+            if (idx == part_index) {
+                if (seg.len == 0) break;
+                if (unique) {
+                    var dup_used = false;
+                    for (used.items) |u| {
+                        if (std.mem.eql(u8, u, seg)) {
+                            dup_used = true;
+                            break;
+                        }
+                    }
+                    if (dup_used) break;
+                }
+                matched = true;
+                break;
+            }
+        }
+        if (matched) {
+            try result.append(allocator, .{
+                .value = try joined.toOwnedSlice(allocator),
+                .description = try allocator.dupe(u8, c.description),
+                .style = try allocator.dupe(u8, c.style),
+                .nospace = true,
+                .tag = try allocator.dupe(u8, c.tag),
+                .uid = try allocator.dupe(u8, c.uid),
+            });
+        }
+    }
+    return result.toOwnedSlice(allocator);
 }
 
 fn modStyle(allocator: std.mem.Allocator, candidates: []traverse.Candidate, style: []const u8) ![]traverse.Candidate {
@@ -232,10 +355,27 @@ fn modShift(allocator: std.mem.Allocator, candidates: []traverse.Candidate, args
     return result;
 }
 
-fn modSuppress(allocator: std.mem.Allocator, candidates: []traverse.Candidate, _: []const u8) ![]traverse.Candidate {
-    var result = try allocator.alloc(traverse.Candidate, candidates.len);
-    for (candidates, 0..) |c, i| result[i] = c;
-    return result;
+fn modSuppress(allocator: std.mem.Allocator, candidates: []traverse.Candidate, args: []const u8) ![]traverse.Candidate {
+    // Upstream suppresses messages matching the regex expressions; here we
+    // filter message candidates (empty value, non-empty description) whose
+    // description contains any of the (substring) expressions.
+    var result = std.ArrayList(traverse.Candidate).empty;
+    for (candidates) |c| {
+        if (c.value.len == 0 and c.description.len > 0) {
+            var suppressed = false;
+            var it = std.mem.splitSequence(u8, args, ", ");
+            while (it.next()) |expr| {
+                const trimmed = std.mem.trim(u8, expr, " \"[]");
+                if (trimmed.len > 0 and std.mem.indexOf(u8, c.description, trimmed) != null) {
+                    suppressed = true;
+                    break;
+                }
+            }
+            if (suppressed) continue;
+        }
+        try result.append(allocator, c);
+    }
+    return result.toOwnedSlice(allocator);
 }
 
 fn modUsage(allocator: std.mem.Allocator, candidates: []traverse.Candidate, usage: []const u8) ![]traverse.Candidate {
@@ -462,4 +602,15 @@ test "bare dollar shorthand $(cmd) matches $sh(cmd)" {
     try std.testing.expectEqual(@as(usize, 2), candidates.len);
     try std.testing.expectEqualStrings("one", candidates[0].value);
     try std.testing.expectEqualStrings("two", candidates[1].value);
+}
+test "uniquelist suppresses segments already used in the prefix" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // values a/b and a/a: completing the second segment of "a/" — "a" is
+    // already used as the first segment, so only a/b remains.
+    const c1 = try resolveMacro(arena.allocator(), std.testing.io, "[a/b, a/a] ||| $uniquelist(/)", "a/", null);
+    try std.testing.expectEqual(@as(usize, 1), c1.len);
+    try std.testing.expectEqualStrings("a/b", c1[0].value);
+    const c2 = try resolveMacro(arena.allocator(), std.testing.io, "[a/b, a/a] ||| $list(/)", "a/", null);
+    try std.testing.expectEqual(@as(usize, 2), c2.len);
 }

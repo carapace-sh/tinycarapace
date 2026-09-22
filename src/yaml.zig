@@ -61,20 +61,22 @@ pub fn getScalarFromMap(map: []const Value.KV, key: []const u8) ?[]const u8 {
 }
 
 const Parser = struct {
-    arena: std.heap.ArenaAllocator,
+    allocator: std.mem.Allocator,
     src: []const u8,
     pos: usize = 0,
 
     fn init(a: std.mem.Allocator, src: []const u8) Parser {
-        return .{ .arena = std.heap.ArenaAllocator.init(a), .src = src };
+        // All parsed strings reference the caller's allocator (usually an arena
+        // owned by the caller) — no internal arena is created.
+        return .{ .allocator = a, .src = src };
     }
 
     fn alloc(self: *Parser) std.mem.Allocator {
-        return self.arena.allocator();
+        return self.allocator;
     }
 
     fn dup(self: *Parser, s: []const u8) []const u8 {
-        return self.alloc().dupe(u8, s) catch unreachable;
+        return self.alloc().dupe(u8, s) catch "";
     }
 
     fn skipBlanks(self: *Parser) void {
@@ -166,6 +168,7 @@ const Parser = struct {
         if (self.pos >= self.src.len) return .{ .scalar = "" };
 
         const indent = self.countIndent();
+        if (self.pos >= self.src.len) return .{ .scalar = "" };
         if (self.atSeqEntry()) return self.parseList(indent);
         if (self.src[self.pos] == '[') return self.parseFlowSeq();
         if (self.src[self.pos] == '{') return self.parseFlowMap();
@@ -299,6 +302,20 @@ const Parser = struct {
             // Inline content after dash
             const c = self.src[self.pos];
             if (c == '[') {
+                // If the flow sequence is followed by trailing content on the
+                // same line (e.g. "[a, b] ||| $style(...)"), the whole line is
+                // an action string — treat it as a scalar instead.
+                const after = self.findFlowSeqEnd();
+                if (after) |end| {
+                    var line_end = end;
+                    while (line_end < self.src.len and self.src[line_end] != '\n') line_end += 1;
+                    const rest = std.mem.trim(u8, self.src[end..line_end], " \t\r");
+                    if (rest.len > 0 and !std.mem.startsWith(u8, rest, "#")) {
+                        const val = self.readInline();
+                        try items.append(self.alloc(), .{ .scalar = self.dup(val) });
+                        continue;
+                    }
+                }
                 const val = try self.parseFlowSeq();
                 try items.append(self.alloc(), val);
                 self.skipToEOL();
@@ -318,6 +335,46 @@ const Parser = struct {
         }
 
         return .{ .list = try items.toOwnedSlice(self.alloc()) };
+    }
+
+    /// Find the index just past the closing "]" of a flow sequence starting at
+    /// the current position, or null if the sequence doesn't end with a clean
+    /// line boundary (possibly followed by a " ||| " modifier chain).
+    fn findFlowSeqEnd(self: *Parser) ?usize {
+        var i = self.pos;
+        var depth: usize = 0;
+        var in_str: u8 = 0;
+        while (i < self.src.len and self.src[i] != '\n') : (i += 1) {
+            const ch = self.src[i];
+            if (in_str != 0) {
+                if (ch == '\\') {
+                    i += 1;
+                } else if (ch == in_str) {
+                    in_str = 0;
+                }
+                continue;
+            }
+            switch (ch) {
+                '"', '\'' => in_str = ch,
+                '[', '{' => depth += 1,
+                ']', '}' => {
+                    if (depth == 0) return null;
+                    depth -= 1;
+                    if (depth == 0) {
+                        // End the sequence only if the rest of the line is empty,
+                        // a comment, or a modifier chain.
+                        var line_end = i + 1;
+                        while (line_end < self.src.len and self.src[line_end] != '\n') line_end += 1;
+                        const rest = std.mem.trim(u8, self.src[i + 1 .. line_end], " \t\r");
+                        if (rest.len == 0 or std.mem.startsWith(u8, rest, "#") or std.mem.startsWith(u8, rest, "|||")) {
+                            return i + 1;
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+        return null;
     }
 
     fn parseBlock(self: *Parser, _: usize) anyerror!Value {
@@ -359,7 +416,35 @@ const Parser = struct {
             if (self.pos < self.src.len) self.pos += 1;
         }
         const block_end = self.pos;
-        return self.dup(self.src[block_start..block_end]);
+        const block = self.src[block_start..block_end];
+        // Strip the block's common indentation from each line (YAML semantics)
+        var min_indent: ?usize = null;
+        {
+            var i: usize = 0;
+            while (i < block.len) {
+                var line_indent: usize = 0;
+                while (i < block.len and block[i] == ' ') : (i += 1) line_indent += 1;
+                if (i >= block.len) break;
+                if (block[i] != '\n' and (min_indent == null or line_indent < min_indent.?)) {
+                    min_indent = line_indent;
+                }
+                while (i < block.len and block[i] != '\n') i += 1;
+                if (i < block.len) i += 1;
+            }
+        }
+        var buf = std.ArrayList(u8).empty;
+        var i: usize = 0;
+        const strip = min_indent orelse 0;
+        while (i < block.len) {
+            var skipped: usize = 0;
+            while (i < block.len and block[i] == ' ' and skipped < strip) : (skipped += 1) i += 1;
+            while (i < block.len and block[i] != '\n') : (i += 1) try buf.append(self.alloc(), block[i]);
+            if (i < block.len) {
+                try buf.append(self.alloc(), '\n');
+                i += 1;
+            }
+        }
+        return buf.items;
     }
 
     fn parseInlineMap(self: *Parser, indent: usize) anyerror!Value {
@@ -499,7 +584,14 @@ const Parser = struct {
             } else if (c == '{') {
                 try items.append(self.alloc(), try self.parseFlowMap());
             } else {
+                const before = self.pos;
                 const s = try self.readFlowScalar();
+                if (self.pos == before) {
+                    // Unhandled character: consume it to guarantee progress
+                    self.pos += 1;
+                    try items.append(self.alloc(), .{ .scalar = self.dup(s) });
+                    continue;
+                }
                 try items.append(self.alloc(), .{ .scalar = self.dup(s) });
             }
         }

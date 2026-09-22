@@ -21,6 +21,60 @@ fn buildCompline(allocator: std.mem.Allocator, cmd: []const u8, args: []const []
     return cmdline.toOwnedSlice(allocator);
 }
 
+/// Escape for embedding into a POSIX double-quoted shell string.
+fn escapeShDouble(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
+    var buf = std.ArrayList(u8).empty;
+    for (s) |c| {
+        switch (c) {
+            '\\', '"', '$', '`' => {
+                try buf.append(allocator, '\\');
+                try buf.append(allocator, c);
+            },
+            else => try buf.append(allocator, c),
+        }
+    }
+    return buf.toOwnedSlice(allocator);
+}
+
+/// Escape for embedding into a fish double-quoted string.
+fn escapeFishDouble(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
+    var buf = std.ArrayList(u8).empty;
+    for (s) |c| {
+        switch (c) {
+            '\\', '"', '$' => {
+                try buf.append(allocator, '\\');
+                try buf.append(allocator, c);
+            },
+            else => try buf.append(allocator, c),
+        }
+    }
+    return buf.toOwnedSlice(allocator);
+}
+
+/// Escape for embedding into a PowerShell double-quoted string.
+fn escapePwshDouble(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
+    var buf = std.ArrayList(u8).empty;
+    for (s) |c| {
+        switch (c) {
+            '`', '"', '$' => {
+                try buf.append(allocator, '`');
+                try buf.append(allocator, c);
+            },
+            else => try buf.append(allocator, c),
+        }
+    }
+    return buf.toOwnedSlice(allocator);
+}
+
+/// Escape for embedding into a single-quoted string (fish, powershell).
+fn escapeSingleQuote(allocator: std.mem.Allocator, s: []const u8, esc: []const u8) ![]const u8 {
+    var buf = std.ArrayList(u8).empty;
+    for (s) |c| {
+        if (c == '\'') try buf.appendSlice(allocator, esc) else try buf.append(allocator, c);
+    }
+    return buf.toOwnedSlice(allocator);
+}
+
 /// Parse "$bridge.name(command, args...)" — delegate to framework-specific completion.
 pub fn resolveBridge(allocator: std.mem.Allocator, io: std.Io, macro: []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map) ![]traverse.Candidate {
     const paren = std.mem.indexOfScalar(u8, macro, '(') orelse return &.{};
@@ -29,8 +83,10 @@ pub fn resolveBridge(allocator: std.mem.Allocator, io: std.Io, macro: []const u8
     const bridge_dot = macro[0..paren];
     const bridge_name = if (std.mem.startsWith(u8, bridge_dot, "$bridge."))
         bridge_dot[8..]
+    else if (bridge_dot.len > 7)
+        bridge_dot[7..]
     else
-        bridge_dot[7..];
+        return &.{};
 
     const args_part = macro[paren + 1 .. macro.len - 1];
     if (args_part.len == 0) return &.{};
@@ -174,8 +230,9 @@ fn bridgeBash(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: [
         "[ -f /usr/share/bash-completion/bash_completion ] && source /usr/share/bash-completion/bash_completion\n" ++
         "[ -f /usr/local/share/bash-completion/bash_completion ] && source /usr/local/share/bash-completion/bash_completion\n" ++
         "[ -f /data/data/com.termux/files/usr/share/bash-completion/bash_completion ] && source /data/data/com.termux/files/usr/share/bash-completion/bash_completion\n");
-    try script.appendSlice(allocator, "__load_completion \""); try script.appendSlice(allocator, cmd); try script.appendSlice(allocator, "\" 2>/dev/null\n");
-    try script.appendSlice(allocator, "_cf=$(complete -p \""); try script.appendSlice(allocator, cmd); try script.appendSlice(allocator, "\" 2>/dev/null | sed -r 's/.* -F ([^ ]+).*/\\1/')\n");
+    const cmd_escaped = try escapeShDouble(allocator, cmd);
+    try script.appendSlice(allocator, "__load_completion \""); try script.appendSlice(allocator, cmd_escaped); try script.appendSlice(allocator, "\" 2>/dev/null\n");
+    try script.appendSlice(allocator, "_cf=$(complete -p \""); try script.appendSlice(allocator, cmd_escaped); try script.appendSlice(allocator, "\" 2>/dev/null | sed -r 's/.* -F ([^ ]+).*/\\1/')\n");
     try script.appendSlice(allocator, "if [ -n \"$_cf\" ]; then \"$_cf\"\n  for i in \"${COMPREPLY[@]}\"; do\n    if [[ -d \"$i\" && \"$i\" != */ ]]; then echo \"$i/\"; else echo \"$i\"; fi; done\nfi\n");
 
     const result = std.process.run(allocator, io, .{
@@ -309,9 +366,10 @@ fn bridgeFish(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: [
     const config_dir = try std.fmt.allocPrint(allocator, "{s}/.config/carapace/bridge/fish", .{home_fish});
     defer allocator.free(config_dir);
 
+    const cmdline_escaped = try escapeFishDouble(allocator, cmdline);
     const snippet = try std.fmt.allocPrint(allocator,
         "set __fish_config_dir {s};source \"$__fish_data_dir/config.fish\";source \"{s}/config.fish\";complete --do-complete=\"{s}\"",
-        .{ config_dir, config_dir, cmdline });
+        .{ config_dir, config_dir, cmdline_escaped });
     defer allocator.free(snippet);
 
     const result = std.process.run(allocator, io, .{
@@ -342,7 +400,7 @@ fn bridgeCarapace(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, arg
     try argv.append(allocator, cmd);
     try argv.append(allocator, "_carapace"); try argv.append(allocator, "export"); try argv.append(allocator, "");
     for (args) |a| try argv.append(allocator, a);
-    if (prefix.len > 0) try argv.append(allocator, prefix);
+    try argv.append(allocator, prefix);
     const result = std.process.run(allocator, io, .{
         .argv = argv.items, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024),
         .environ_map = environ_map,
@@ -361,7 +419,7 @@ fn bridgeCarapaceBin(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, 
     try argv.append(allocator, "carapace");
     try argv.append(allocator, cmd); try argv.append(allocator, "export"); try argv.append(allocator, "");
     for (args) |a| try argv.append(allocator, a);
-    if (prefix.len > 0) try argv.append(allocator, prefix);
+    try argv.append(allocator, prefix);
     const result = std.process.run(allocator, io, .{
         .argv = argv.items, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024),
         .environ_map = environ_map,
@@ -414,7 +472,7 @@ fn bridgeArgcompleteV1(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8
     try env.put("_ARGCOMPLETE_SHELL", "fish"); try env.put("COMP_LINE", cmdline);
     try env.put("COMP_POINT", try std.fmt.allocPrint(allocator, "{d}", .{cmdline.len}));
     try env.put("_ARGCOMPLETE_SUPPRESS_SPACE", "1");
-    const shell_cmd = try std.fmt.allocPrint(allocator, "{s} 8>&1 9>&2 1>/dev/null 2>/dev/null", .{cmd});
+    const shell_cmd = try std.fmt.allocPrint(allocator, "{s} 8>&1 9>&2 1>/dev/null 2>/dev/null", .{try escapeShDouble(allocator, cmd)});
     defer allocator.free(shell_cmd);
     const result = std.process.run(allocator, io, .{
         .argv = &.{ "sh", "-c", shell_cmd }, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024), .environ_map = &env,
@@ -505,10 +563,9 @@ fn bridgeClick(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: 
     var word_count: usize = 1;
     for (cmdline) |c| { if (c == ' ') word_count += 1; }
     try env.put("COMP_CWORD", try std.fmt.allocPrint(allocator, "{d}", .{word_count}));
-    var upper_buf: [256]u8 = undefined;
-    var upper_len: usize = 0;
-    for (cmd) |c| { upper_buf[upper_len] = std.ascii.toUpper(c); upper_len += 1; }
-    const env_var_name = try std.fmt.allocPrint(allocator, "_{s}_COMPLETE", .{upper_buf[0..upper_len]});
+    var upper = std.ArrayList(u8).empty;
+    for (cmd) |c| try upper.append(allocator, std.ascii.toUpper(c));
+    const env_var_name = try std.fmt.allocPrint(allocator, "_{s}_COMPLETE", .{upper.items});
     defer allocator.free(env_var_name);
     try env.put(env_var_name, "zsh_complete");
     const result = std.process.run(allocator, io, .{
@@ -520,12 +577,24 @@ fn bridgeClick(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, args: 
     defer allocator.free(result.stdout); defer allocator.free(result.stderr);
     var candidates = std.ArrayList(traverse.Candidate).empty;
     var lines = std.mem.splitScalar(u8, result.stdout, '\n');
-    while (lines.next()) |_| {
-        const value_line = if (lines.next()) |l| std.mem.trim(u8, l, " \t\r") else break;
-        const desc_line = if (lines.next()) |l| std.mem.trim(u8, l, " \t\r") else "";
-        if (value_line.len > 0) try candidates.append(allocator, .{ .value = try allocator.dupe(u8, value_line), .description = try allocator.dupe(u8, desc_line) });
+    while (true) {
+        // click's zsh_complete emits triplets: value, value, description
+        const first = skipEmpty(&lines) orelse break;
+        const value_line = skipEmpty(&lines) orelse break;
+        const desc_line = skipEmpty(&lines) orelse "";
+        _ = first;
+        const value = std.mem.trim(u8, value_line, " \t\r");
+        if (value.len > 0) try candidates.append(allocator, .{ .value = try allocator.dupe(u8, value), .description = try allocator.dupe(u8, std.mem.trim(u8, desc_line, " \t\r")) });
     }
     return candidates.toOwnedSlice(allocator);
+}
+
+fn skipEmpty(lines: *std.mem.SplitIterator(u8, .scalar)) ?[]const u8 {
+    while (lines.next()) |l| {
+        const trimmed = std.mem.trim(u8, l, " \t\r");
+        if (trimmed.len > 0) return trimmed;
+    }
+    return null;
 }
 
 /// Bridge: complete — run with COMP_LINE
@@ -672,9 +741,11 @@ fn bridgePowershell(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, a
     const home = if (environ_map) |em| em.get("HOME") orelse "/tmp" else "/tmp";
     const config_dir = try std.fmt.allocPrint(allocator, "{s}/.config/carapace/bridge/powershell", .{home});
     defer allocator.free(config_dir);
+    const cmdline_escaped = try escapePwshDouble(allocator, cmdline);
+    const config_escaped = try escapePwshDouble(allocator, config_dir);
     const snippet = try std.fmt.allocPrint(allocator,
         "Get-Content \"{s}/Microsoft.PowerShell_profile.ps1\" | Out-String | Invoke-Expression;[System.Management.Automation.CommandCompletion]::CompleteInput(\"{s}\", {d}, $null).CompletionMatches | ConvertTo-Json",
-        .{ config_dir, cmdline, cmdline.len });
+        .{ config_escaped, cmdline_escaped, cmdline.len });
     defer allocator.free(snippet);
     const result = std.process.run(allocator, io, .{
         .argv = &.{ "pwsh", "-Command", snippet }, .stdout_limit = .limited(1024 * 64), .stderr_limit = .limited(1024), .environ_map = &env,
@@ -690,16 +761,19 @@ fn bridgePowershell(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, a
         while (pos < result.stdout.len) {
             const ct_key = std.mem.indexOf(u8, result.stdout[pos..], "\"CompletionText\": \"") orelse break;
             const val_start = pos + ct_key + 19;
-            const val_end = std.mem.indexOfScalar(u8, result.stdout[val_start..], '"') orelse break;
-            var value = result.stdout[val_start .. val_start + val_end];
+            const val_end_rel = jsonStringEnd(result.stdout[val_start..]) orelse break;
+            var value = result.stdout[val_start .. val_start + val_end_rel];
             // Strip trailing space (nospace indicator)
             if (value.len > 0 and value[value.len - 1] == ' ') value = value[0 .. value.len - 1];
-            pos = val_start + val_end;
+            pos = val_start + val_end_rel;
+            // Scope ToolTip lookup to the current JSON object
+            const obj_end = std.mem.indexOfScalarPos(u8, result.stdout, pos, '}') orelse result.stdout.len;
             var desc: []const u8 = "";
-            if (std.mem.indexOf(u8, result.stdout[pos..], "\"ToolTip\": \"")) |tt_key| {
-                const d_start = pos + tt_key + 11;
-                const d_end = std.mem.indexOfScalar(u8, result.stdout[d_start..], '"') orelse 0;
-                if (d_end > 0) desc = result.stdout[d_start .. d_start + d_end];
+            if (std.mem.indexOf(u8, result.stdout[pos..obj_end], "\"ToolTip\": \"")) |tt_key| {
+                const d_start = pos + tt_key + 12;
+                if (jsonStringEnd(result.stdout[d_start..])) |d_end| {
+                    desc = result.stdout[d_start .. d_start + d_end];
+                }
             }
             // Skip if CompletionText == ToolTip
             if (std.mem.eql(u8, value, desc)) desc = "";
@@ -707,6 +781,19 @@ fn bridgePowershell(allocator: std.mem.Allocator, io: std.Io, cmd: []const u8, a
         }
     }
     return candidates.toOwnedSlice(allocator);
+}
+
+/// Index of the closing quote of a JSON string value (honors backslash escapes).
+fn jsonStringEnd(s: []const u8) ?usize {
+    var i: usize = 0;
+    while (i < s.len) : (i += 1) {
+        if (s[i] == '\\') {
+            i += 1;
+        } else if (s[i] == '"') {
+            return i;
+        }
+    }
+    return null;
 }
 
 /// Bridge: urfavecli — run with --generate-shell-completion
@@ -802,23 +889,18 @@ fn parseExportJson(allocator: std.mem.Allocator, json: []const u8) ![]traverse.C
     while (rest < json.len) {
         const val_key = std.mem.indexOf(u8, json[rest..], "\"value\": \"") orelse break;
         const val_start = rest + val_key + 10;
-        const val_end = std.mem.indexOfScalar(u8, json[val_start..], '"') orelse break;
-        const value = json[val_start .. val_start + val_end];
+        const val_end_rel = jsonStringEnd(json[val_start..]) orelse break;
+        const value = json[val_start .. val_start + val_end_rel];
         var desc: []const u8 = "";
-        const after_val = json[val_start + val_end ..];
+        const after_val = json[val_start + val_end_rel ..];
         if (std.mem.indexOf(u8, after_val, "\"description\": \"")) |desc_start| {
             const d_start = desc_start + 16;
-            var d_end: usize = 0;
-            var i: usize = d_start;
-            while (i < after_val.len) {
-                if (after_val[i] == '\\' and i + 1 < after_val.len) { i += 2; continue; }
-                if (after_val[i] == '"') { d_end = i; break; }
-                i += 1;
+            if (jsonStringEnd(after_val[d_start..])) |d_end| {
+                desc = after_val[d_start .. d_start + d_end];
             }
-            if (d_end > 0) desc = after_val[d_start..d_end];
         }
         try candidates.append(allocator, .{ .value = try allocator.dupe(u8, value), .description = try allocator.dupe(u8, desc) });
-        rest = val_start + val_end;
+        rest = val_start + val_end_rel;
     }
     return candidates.toOwnedSlice(allocator);
 }

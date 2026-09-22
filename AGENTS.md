@@ -233,7 +233,8 @@ Extended notation (object form) supports `nargs` and `default`:
 - `parsing: disabled` on a subcommand also disables flag parsing
 - `parsing: non-interspersed` stops flag parsing after first positional
 - **Persistent flags ARE inherited from ancestors** — `findFlag()` walks up the
-  parent chain via `cmd.parent`
+  parent chain via `cmd.parent`, but only ancestors' `persistentflags` are
+  inherited (not their local flags)
 - **Exclusive flags** — consumed flag groups exclude their members from completion
 - **Variable expansion** — `${C_ARG0}`, `${C_FLAG_NAME}`, `${C_VALUE}` with
   `${VAR:-default}` syntax

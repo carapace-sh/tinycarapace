@@ -2,6 +2,15 @@ const std = @import("std");
 const spec = @import("../spec.zig");
 const traverse = @import("../traverse.zig");
 
+/// Escape a command name for use inside fish single quotes.
+fn escapeName(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
+    var buf = std.ArrayList(u8).empty;
+    for (name) |c| {
+        if (c == '\'') try buf.appendSlice(allocator, "\\'") else try buf.append(allocator, c);
+    }
+    return buf.toOwnedSlice(allocator);
+}
+
 pub fn generateInitScript(allocator: std.mem.Allocator, specs: []const spec.SpecInfo) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     const exe = "carapace-tiny";
@@ -35,11 +44,12 @@ pub fn generateInitScript(allocator: std.mem.Allocator, specs: []const spec.Spec
     );
 
     for (specs) |s| {
+        const name = try escapeName(allocator, s.name);
         try buf.print(allocator,
             \\complete -e '{s}'
             \\complete -c '{s}' -f -a '(_carapace_completer {s})' -r
             \\
-        , .{ s.name, s.name, s.name });
+        , .{ name, name, s.name });
     }
 
     return buf.toOwnedSlice(allocator);
@@ -48,6 +58,7 @@ pub fn generateInitScript(allocator: std.mem.Allocator, specs: []const spec.Spec
 pub fn generateSnippet(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     const exe = "carapace-tiny";
+    const name_escaped = try escapeName(allocator, name);
 
     try buf.print(allocator,
         \\function _{s}_completion
@@ -65,7 +76,7 @@ pub fn generateSnippet(allocator: std.mem.Allocator, name: []const u8) ![]const 
         \\complete -e '{s}'
         \\complete -c '{s}' -f -a '(_{s}_completion)' -r
         \\
-    , .{ name, exe, name, exe, name, exe, name, name, name, name });
+    , .{ name, exe, name, exe, name, exe, name, name_escaped, name_escaped, name });
 
     return buf.toOwnedSlice(allocator);
 }

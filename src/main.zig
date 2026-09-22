@@ -46,17 +46,29 @@ fn runCommand(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, extra
 
     // Script mode: starts with #!
     if (run.len >= 2 and run[0] == '#' and run[1] == '!') {
-        // Write script to temp file, make executable, run it
+        // Write script to an exclusive temp file, run it, clean up
         const tmp_dir = if (environ_map) |env| env.get("TMPDIR") orelse "/tmp" else "/tmp";
-        const script_path = try std.fs.path.join(allocator, &.{ tmp_dir, "tinycarapace-run.sh" });
+        // Unique-enough suffix: wall-clock nanoseconds (createFile uses
+        // .exclusive, so collisions fail safely rather than clobbering).
+        const now = std.Io.Timestamp.now(io, .real);
+        const suffix: u64 = @intCast(@mod(now.nanoseconds, 1 << 32));
+        const script_name = try std.fmt.allocPrint(allocator, "tinycarapace-run-{x}.sh", .{suffix});
+        defer allocator.free(script_name);
+        const script_path = try std.fs.path.join(allocator, &.{ tmp_dir, script_name });
         defer allocator.free(script_path);
 
-        var script_file = std.Io.Dir.cwd().createFile(io, script_path, .{ .exclusive = false }) catch {
+        var script_file = std.Io.Dir.cwd().createFile(io, script_path, .{ .exclusive = true }) catch {
             std.debug.print("error: cannot create temp script\n", .{});
             return 1;
         };
-        try script_file.writeStreamingAll(io, run);
+        script_file.writeStreamingAll(io, run) catch {
+            script_file.close(io);
+            std.Io.Dir.cwd().deleteFile(io, script_path) catch {};
+            std.debug.print("error: cannot write temp script\n", .{});
+            return 1;
+        };
         script_file.close(io);
+        defer std.Io.Dir.cwd().deleteFile(io, script_path) catch {};
 
         // Build argv: sh script_path <extra_args>
         var argv = std.ArrayList([]const u8).empty;
@@ -77,9 +89,6 @@ fn runCommand(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, extra
         if (result.stderr.len > 0) std.Io.File.stderr().writeStreamingAll(io, result.stderr) catch {};
         allocator.free(result.stdout);
         allocator.free(result.stderr);
-
-        // Clean up temp file
-        std.Io.Dir.cwd().deleteFile(io, script_path) catch {};
         return 0;
     }
 

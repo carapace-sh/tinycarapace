@@ -2,6 +2,23 @@ const std = @import("std");
 const spec = @import("../spec.zig");
 const traverse = @import("../traverse.zig");
 
+/// Quote a command name for use as a zsh compdef argument.
+fn quoteName(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
+    var buf = std.ArrayList(u8).empty;
+    try buf.append(allocator, '"');
+    for (name) |c| {
+        switch (c) {
+            '\\', '"', '$', '`' => {
+                try buf.append(allocator, '\\');
+                try buf.append(allocator, c);
+            },
+            else => try buf.append(allocator, c),
+        }
+    }
+    try buf.append(allocator, '"');
+    return buf.toOwnedSlice(allocator);
+}
+
 pub fn generateInitScript(allocator: std.mem.Allocator, specs: []const spec.SpecInfo) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     const exe = "carapace-tiny";
@@ -46,9 +63,13 @@ pub fn generateInitScript(allocator: std.mem.Allocator, specs: []const spec.Spec
         \\  done <<<"${{data}}"
         \\}}
         \\compquote '' 2>/dev/null && _carapace_completer
-        \\compdef _carapace_completer {s}
         \\
-    , .{ names.items, exe, exe, exe, names.items });
+    , .{ names.items, exe, exe, exe });
+    try buf.appendSlice(allocator, "compdef _carapace_completer");
+    for (specs) |s| {
+        try buf.print(allocator, " {s}", .{try quoteName(allocator, s.name)});
+    }
+    try buf.appendSlice(allocator, "\n");
 
     return buf.toOwnedSlice(allocator);
 }
@@ -90,7 +111,7 @@ pub fn generateSnippet(allocator: std.mem.Allocator, name: []const u8) ![]const 
         \\compquote '' 2>/dev/null && _{s}_completion
         \\compdef _{s}_completion {s}
         \\
-    , .{ name, name, exe, name, exe, name, exe, name, name, name, name });
+    , .{ name, name, exe, name, exe, name, exe, name, name, name, try quoteName(allocator, name) });
 
     return buf.toOwnedSlice(allocator);
 }
