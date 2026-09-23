@@ -97,7 +97,8 @@ pub const Command = struct {
             if (std.mem.eql(u8, fc.name, name)) return fc.values;
         }
         if (self.parent) |p| {
-            return p.findFlagCompletion(name);        }
+            return p.findFlagCompletion(name);
+        }
         return null;
     }
 };
