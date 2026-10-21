@@ -23,11 +23,7 @@ pub fn formatOutput(allocator: std.mem.Allocator, candidates: []traverse.Candida
     // upstream sorts values by value before serializing
     const sorted = try allocator.dupe(traverse.Candidate, candidates);
     defer allocator.free(sorted);
-    std.mem.sort(traverse.Candidate, sorted, {}, struct {
-        fn lessThan(_: void, a: traverse.Candidate, b: traverse.Candidate) bool {
-            return std.mem.lessThan(u8, a.value, b.value);
-        }
-    }.lessThan);
+    traverse.sortCandidates(sorted);
 
     // Compute global nospace flag
     var has_nospace = false;

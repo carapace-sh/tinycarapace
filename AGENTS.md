@@ -33,8 +33,12 @@ but must be **consistent** with upstream for the features it implements.
 zig build                                    # Build (zig-out/bin/carapace-tiny)
 zig build test                                # Run all tests (no output = success)
 zig fmt --check src build.zig                 # Formatting check
-zig build -Doptimize=ReleaseFast && strip zig-out/bin/carapace-tiny  # Release
+zig build -Doptimize=ReleaseFast              # Release (~534 KB, already stripped)
 ```
+
+Release builds set `single_threaded`, `strip` and `unwind_tables = .none` in
+`build.zig` to keep the binary small; keep that in mind when adding thread-based
+or unwinding code.
 
 Cross-compile (no extra toolchain needed):
 ```bash

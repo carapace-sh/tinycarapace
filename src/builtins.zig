@@ -55,11 +55,7 @@ fn resolvePath(allocator: std.mem.Allocator, io: std.Io, prefix: []const u8, suf
         }
     }
 
-    std.mem.sort(traverse.Candidate, candidates.items, {}, struct {
-        fn lessThan(_: void, a: traverse.Candidate, b: traverse.Candidate) bool {
-            return std.mem.lessThan(u8, a.value, b.value);
-        }
-    }.lessThan);
+    traverse.sortCandidates(candidates.items);
 
     return candidates.toOwnedSlice(allocator);
 }
@@ -133,11 +129,7 @@ pub fn resolveExecutables(allocator: std.mem.Allocator, io: std.Io, macro: []con
         }
     }
 
-    std.mem.sort(traverse.Candidate, candidates.items, {}, struct {
-        fn lessThan(_: void, a: traverse.Candidate, b: traverse.Candidate) bool {
-            return std.mem.lessThan(u8, a.value, b.value);
-        }
-    }.lessThan);
+    traverse.sortCandidates(candidates.items);
 
     return candidates.toOwnedSlice(allocator);
 }

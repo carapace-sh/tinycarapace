@@ -19,6 +19,17 @@ pub const Meta = struct {
     usage: []const u8 = "",
 };
 
+/// Sort candidates by value in place. Uses the unstable sort to avoid linking
+/// the (much larger) stable block sort; candidate order is not otherwise
+/// meaningful.
+pub fn sortCandidates(items: []Candidate) void {
+    std.mem.sortUnstable(Candidate, items, {}, struct {
+        fn lessThan(_: void, a: Candidate, b: Candidate) bool {
+            return std.mem.lessThan(u8, a.value, b.value);
+        }
+    }.lessThan);
+}
+
 /// Split a raw value string into (value, description, style) using tab separators.
 /// Format: `value\tdescription\tstyle` or `value\tdescription` or just `value`.
 pub fn splitValue(raw: []const u8) struct { value: []const u8, description: []const u8, style: []const u8 } {

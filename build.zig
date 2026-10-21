@@ -3,6 +3,7 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const is_debug = optimize == .Debug;
 
     const options = b.addOptions();
     options.addOption([]const u8, "version", "0.1.0");
@@ -14,6 +15,11 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            // size-oriented release defaults: no debug info, no unwind tables,
+            // and no thread-safety machinery (the program is single-threaded)
+            .strip = if (is_debug) null else true,
+            .unwind_tables = if (is_debug) null else .none,
+            .single_threaded = true,
         }),
     });
     exe.root_module.addImport("build_options", options_module);
@@ -30,6 +36,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .single_threaded = true,
         }),
     });
     tests.root_module.addImport("build_options", options_module);

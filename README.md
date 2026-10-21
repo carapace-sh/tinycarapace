@@ -38,11 +38,14 @@ Requires [Zig 0.16+](https://ziglang.org/download/).
 
 ```bash
 zig build                                     # Debug build
-zig build -Doptimize=ReleaseFast && strip zig-out/bin/carapace-tiny  # ~920 KB
-zig build -Doptimize=ReleaseSmall && strip zig-out/bin/carapace-tiny  # ~336 KB
+zig build -Doptimize=ReleaseFast              # ~534 KB
+zig build -Doptimize=ReleaseSmall             # ~280 KB (~277 KB static musl)
 zig build -Dtarget=x86_64-linux-musl          # Cross-compile (no extra toolchain)
 zig build -Dtarget=aarch64-linux-musl         # Cross-compile for ARM64
 ```
+
+Release builds are stripped, omit unwind tables and are compiled single-threaded
+to keep the binary small.
 
 ## Usage
 
@@ -89,7 +92,7 @@ carapace. See [plan.md](plan.md) and [AGENTS.md](AGENTS.md) for details.
 | Run mode (alias, macro, script) | ✅ |
 | Bridge fallback (`CARAPACE_BRIDGES`) | ✅ |
 | Persistent flags, exclusive flags, group, nargs | ✅ |
-| Binary size (ReleaseSmall, stripped) | **~336 KB** |
+| Binary size (ReleaseSmall, stripped) | **~280 KB** |
 
 ## Spec format
 
