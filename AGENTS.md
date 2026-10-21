@@ -4,7 +4,7 @@ A minimal [carapace-spec](https://github.com/carapace-sh/carapace-spec) interpre
 in Zig for resource-constrained environments (docker containers, alpine, scratch
 images). It reads the standard YAML spec format and provides shell completion.
 
-**Language**: Zig 0.16.0+ (min 0.15.0). **Tests**: `zig build test`
+**Language**: Zig 0.16.0+. **Tests**: `zig build test`
 
 ---
 
@@ -32,6 +32,7 @@ but must be **consistent** with upstream for the features it implements.
 ```bash
 zig build                                    # Build (zig-out/bin/carapace-tiny)
 zig build test                                # Run all tests (no output = success)
+zig fmt --check src build.zig                 # Formatting check
 zig build -Doptimize=ReleaseFast && strip zig-out/bin/carapace-tiny  # Release
 ```
 
@@ -43,7 +44,7 @@ zig build -Dtarget=aarch64-linux-musl
 
 ---
 
-## Source Layout (~5100 LOC)
+## Source Layout (~7600 LOC)
 
 ```
 src/
@@ -191,10 +192,8 @@ or `args.processAlloc` — those are the wrong version.
 ### Memory Management
 
 - **One `ArenaAllocator` per completion invocation** in `main.zig`
-- Inside `loadSpec()`, a **second ArenaAllocator** is created — the caller's
-  arena is only used indirectly. The inner arena is freed by `defer arena.deinit()`
-  in `loadSpec`, but the returned `Command` struct borrows from it. The caller's
-  arena keeps the result alive.
+- `loadSpec()` and `yaml.parse()` allocate directly in the caller's arena; no
+  intermediate arena is created.
 - `std.ArrayList(T).empty` is used instead of `std.ArrayList(T).init(allocator)`
   — allocator passed separately to `append()`.
 
@@ -274,7 +273,8 @@ Supports:
 - **Context modifiers**: `$shift(n)` shifts positional args before base expansion, `$filterargs` removes candidates matching consumed positional args
 - **Modifiers**: `$prefix`, `$suffix`, `$nospace`, `$noprefix`, `$style`, `$tag`,
   `$filter`, `$filterargs`, `$retain`, `$shift`, `$suppress`, `$usage`, `$uid`,
-  `$split`, `$splitp`
+  `$split`, `$splitp` (`$split`/`$splitp` are simplified: they act on candidate
+  values instead of re-lexing the command line)
 
 ### Bash Snippet Details
 
@@ -295,6 +295,15 @@ Supports:
 - `zig build test` exits with code 0 on success, errors on failure
 - Test file: `src/main.zig` imports all modules (each has inline tests)
 
+### Meta and messages
+
+- `traverse.Meta` carries action-level `usage` (set by `$usage`, emitted by the
+  export/powershell format).
+- Candidates with an empty value are messages (`$message`): zsh and export emit
+  them as messages, bash/fish drop them.
+- `Candidate.nospace` is per value; `Candidate.noprefix` is separate and only
+  drives zsh `compstate[insert]=menu`.
+
 ### Non-Obvious
 
 - **`@constCast`** is used in test code to pass a const slice to a function
@@ -313,8 +322,10 @@ Supports:
   value templates
 - **`resolveBridgeFallback`** in `traverse.zig` is public — called from `main.zig`
   when no spec file is found for a command
-- The `run` field supports three modes: script (`#!`), macro (`$(`), and alias
-  (`[json, array]` or plain string)
+- The `run` field supports three modes: script (`#!`, interpreter taken from the
+  shebang), shell macro (`$(...)`, `$sh(...)`, `$bash(...)`, ...), and alias
+  (`[json, array]` or plain string). The exit code of the child process is
+  propagated.
 
 ---
 

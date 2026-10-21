@@ -96,6 +96,7 @@ pub fn formatOutput(allocator: std.mem.Allocator, candidates: []traverse.Candida
     var buf: std.ArrayList(u8) = .empty;
 
     for (candidates) |c| {
+        if (c.value.len == 0) continue; // messages are not rendered by fish
         const value = try sanitize(allocator, c.value);
         const description = try sanitize(allocator, c.description);
         if (description.len > 0) {

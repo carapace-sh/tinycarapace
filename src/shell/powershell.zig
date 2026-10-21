@@ -141,7 +141,7 @@ pub fn generateSnippet(allocator: std.mem.Allocator, name: []const u8) ![]const 
 }
 
 pub fn formatOutput(allocator: std.mem.Allocator, candidates: []traverse.Candidate, _: ?[]const u8) ![]const u8 {
-    return @import("export.zig").formatOutput(allocator, candidates);
+    return @import("export.zig").formatOutput(allocator, candidates, "");
 }
 
 test "powershell init script" {

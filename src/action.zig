@@ -31,9 +31,9 @@ pub fn resolveMacro(allocator: std.mem.Allocator, io: std.Io, macro: []const u8,
     }
 
     // Built-in macros
-    if (std.mem.startsWith(u8, macro, "$files")) return try builtins.resolveFiles(allocator, io, macro);
-    if (std.mem.startsWith(u8, macro, "$directories")) return try builtins.resolveDirectories(allocator, io);
-    if (std.mem.startsWith(u8, macro, "$executables")) return try builtins.resolveExecutables(allocator, io, environ_map);
+    if (std.mem.startsWith(u8, macro, "$files")) return try builtins.resolveFiles(allocator, io, macro, prefix);
+    if (std.mem.startsWith(u8, macro, "$directories")) return try builtins.resolveDirectories(allocator, io, prefix);
+    if (std.mem.startsWith(u8, macro, "$executables")) return try builtins.resolveExecutables(allocator, io, macro, environ_map);
     if (std.mem.startsWith(u8, macro, "$message")) return try builtins.resolveMessage(allocator, macro);
     if (std.mem.startsWith(u8, macro, "$list")) return try builtins.resolveList(allocator, macro, prefix, false);
     if (std.mem.startsWith(u8, macro, "$uniquelist")) return try builtins.resolveList(allocator, macro, prefix, true);
@@ -58,6 +58,7 @@ pub fn resolveMacro(allocator: std.mem.Allocator, io: std.Io, macro: []const u8,
                 .description = try allocator.dupe(u8, c.description),
                 .style = try allocator.dupe(u8, c.style),
                 .nospace = c.nospace,
+                .noprefix = c.noprefix,
                 .tag = try allocator.dupe(u8, c.tag),
             });
         }
@@ -137,7 +138,7 @@ pub fn applyModifierWithPrefix(allocator: std.mem.Allocator, candidates: []trave
     if (std.mem.eql(u8, name, "prefix")) return modPrefix(allocator, candidates, args);
     if (std.mem.eql(u8, name, "suffix")) return modSuffix(allocator, candidates, args);
     if (std.mem.eql(u8, name, "nospace")) return modNospace(allocator, candidates, args);
-    if (std.mem.eql(u8, name, "noprefix")) return modNoprefix(allocator, candidates, args);
+    if (std.mem.eql(u8, name, "noprefix")) return modNoprefix(allocator, candidates, args, prefix);
     if (std.mem.eql(u8, name, "style")) return modStyle(allocator, candidates, args);
     if (std.mem.eql(u8, name, "tag")) return modTag(allocator, candidates, args);
     if (std.mem.eql(u8, name, "filter")) return modFilter(allocator, candidates, args);
@@ -145,7 +146,6 @@ pub fn applyModifierWithPrefix(allocator: std.mem.Allocator, candidates: []trave
     if (std.mem.eql(u8, name, "retain")) return modRetain(allocator, candidates, args);
     if (std.mem.eql(u8, name, "shift")) return modShift(allocator, candidates, args);
     if (std.mem.eql(u8, name, "suppress")) return modSuppress(allocator, candidates, args);
-    if (std.mem.eql(u8, name, "usage")) return modUsage(allocator, candidates, args);
     if (std.mem.eql(u8, name, "uid")) return modUid(allocator, candidates, args);
     if (std.mem.eql(u8, name, "split")) return modSplit(allocator, candidates, args);
     if (std.mem.eql(u8, name, "splitp")) return modSplitp(allocator, candidates, args);
@@ -167,6 +167,7 @@ fn modPrefix(allocator: std.mem.Allocator, candidates: []traverse.Candidate, pre
             .description = try allocator.dupe(u8, c.description),
             .style = try allocator.dupe(u8, c.style),
             .nospace = c.nospace,
+            .noprefix = c.noprefix,
             .tag = try allocator.dupe(u8, c.tag),
             .uid = try allocator.dupe(u8, c.uid),
         };
@@ -182,6 +183,7 @@ fn modSuffix(allocator: std.mem.Allocator, candidates: []traverse.Candidate, suf
             .description = try allocator.dupe(u8, c.description),
             .style = try allocator.dupe(u8, c.style),
             .nospace = c.nospace,
+            .noprefix = c.noprefix,
             .tag = try allocator.dupe(u8, c.tag),
             .uid = try allocator.dupe(u8, c.uid),
         };
@@ -193,44 +195,42 @@ fn modNospace(allocator: std.mem.Allocator, candidates: []traverse.Candidate, ch
     var result = try allocator.alloc(traverse.Candidate, candidates.len);
     for (candidates, 0..) |c, i| {
         var has_char = false;
-        for (chars) |ch| { if (std.mem.indexOfScalar(u8, c.value, ch) != null) { has_char = true; break; } }
+        for (chars) |ch| {
+            if (std.mem.indexOfScalar(u8, c.value, ch) != null) {
+                has_char = true;
+                break;
+            }
+        }
         result[i] = .{ .value = try allocator.dupe(u8, c.value), .description = try allocator.dupe(u8, c.description), .style = try allocator.dupe(u8, c.style), .nospace = has_char, .tag = try allocator.dupe(u8, c.tag), .uid = try allocator.dupe(u8, c.uid) };
     }
     return result;
 }
 
-fn modNoprefix(allocator: std.mem.Allocator, candidates: []traverse.Candidate, chars: []const u8) ![]traverse.Candidate {
-    // Upstream NoPrefix: values containing one of the chars are matched and
-    // inserted as the segment after the last occurrence of any char.
-    var result = std.ArrayList(traverse.Candidate).empty;
-    for (candidates) |c| {
-        var last_pos: ?usize = null;
+fn modNoprefix(allocator: std.mem.Allocator, candidates: []traverse.Candidate, chars: []const u8, prefix: []const u8) ![]traverse.Candidate {
+    // Upstream NoPrefix only sets meta.NoPrefix; values are left untouched.
+    // A value matches when the part after the current word starts with one of
+    // the given characters (or anything when no characters are given).
+    var result = try allocator.alloc(traverse.Candidate, candidates.len);
+    for (candidates, 0..) |c, i| {
+        const rest = if (std.mem.startsWith(u8, c.value, prefix)) c.value[prefix.len..] else c.value;
+        var matches = rest.len > 0 and chars.len == 0;
         for (chars) |ch| {
-            if (std.mem.lastIndexOfScalar(u8, c.value, ch)) |pos| {
-                if (last_pos == null or pos > last_pos.?) last_pos = pos;
+            if (rest.len > 0 and rest[0] == ch) {
+                matches = true;
+                break;
             }
         }
-        if (last_pos) |pos| {
-            try result.append(allocator, .{
-                .value = try allocator.dupe(u8, c.value[pos + 1 ..]),
-                .description = try allocator.dupe(u8, c.description),
-                .style = try allocator.dupe(u8, c.style),
-                .nospace = true,
-                .tag = try allocator.dupe(u8, c.tag),
-                .uid = try allocator.dupe(u8, c.uid),
-            });
-        } else {
-            try result.append(allocator, .{
-                .value = try allocator.dupe(u8, c.value),
-                .description = try allocator.dupe(u8, c.description),
-                .style = try allocator.dupe(u8, c.style),
-                .nospace = c.nospace,
-                .tag = try allocator.dupe(u8, c.tag),
-                .uid = try allocator.dupe(u8, c.uid),
-            });
-        }
+        result[i] = .{
+            .value = try allocator.dupe(u8, c.value),
+            .description = try allocator.dupe(u8, c.description),
+            .style = try allocator.dupe(u8, c.style),
+            .nospace = c.nospace,
+            .noprefix = c.noprefix or matches,
+            .tag = try allocator.dupe(u8, c.tag),
+            .uid = try allocator.dupe(u8, c.uid),
+        };
     }
-    return result.toOwnedSlice(allocator);
+    return result;
 }
 
 /// $list(delim)/$uniquelist(delim)/$multiparts([delim]) — complete the segment
@@ -307,7 +307,7 @@ fn modList(allocator: std.mem.Allocator, candidates: []traverse.Candidate, args:
 fn modStyle(allocator: std.mem.Allocator, candidates: []traverse.Candidate, style: []const u8) ![]traverse.Candidate {
     var result = try allocator.alloc(traverse.Candidate, candidates.len);
     for (candidates, 0..) |c, i| {
-        result[i] = .{ .value = try allocator.dupe(u8, c.value), .description = try allocator.dupe(u8, c.description), .style = try allocator.dupe(u8, style), .nospace = c.nospace, .tag = try allocator.dupe(u8, c.tag), .uid = try allocator.dupe(u8, c.uid) };
+        result[i] = .{ .value = try allocator.dupe(u8, c.value), .description = try allocator.dupe(u8, c.description), .style = try allocator.dupe(u8, style), .nospace = c.nospace, .noprefix = c.noprefix, .tag = try allocator.dupe(u8, c.tag), .uid = try allocator.dupe(u8, c.uid) };
     }
     return result;
 }
@@ -315,7 +315,7 @@ fn modStyle(allocator: std.mem.Allocator, candidates: []traverse.Candidate, styl
 fn modTag(allocator: std.mem.Allocator, candidates: []traverse.Candidate, tag: []const u8) ![]traverse.Candidate {
     var result = try allocator.alloc(traverse.Candidate, candidates.len);
     for (candidates, 0..) |c, i| {
-        result[i] = .{ .value = try allocator.dupe(u8, c.value), .description = try allocator.dupe(u8, c.description), .style = try allocator.dupe(u8, c.style), .nospace = c.nospace, .tag = try allocator.dupe(u8, tag), .uid = try allocator.dupe(u8, c.uid) };
+        result[i] = .{ .value = try allocator.dupe(u8, c.value), .description = try allocator.dupe(u8, c.description), .style = try allocator.dupe(u8, c.style), .nospace = c.nospace, .noprefix = c.noprefix, .tag = try allocator.dupe(u8, tag), .uid = try allocator.dupe(u8, c.uid) };
     }
     return result;
 }
@@ -327,7 +327,12 @@ fn modFilter(allocator: std.mem.Allocator, candidates: []traverse.Candidate, arg
     for (candidates) |c| {
         // upstream Filter removes values on exact match
         var should_remove = false;
-        for (filter_values) |fv| { if (std.mem.eql(u8, c.value, fv)) { should_remove = true; break; } }
+        for (filter_values) |fv| {
+            if (std.mem.eql(u8, c.value, fv)) {
+                should_remove = true;
+                break;
+            }
+        }
         if (!should_remove) try result.append(allocator, c);
     }
     return result.toOwnedSlice(allocator);
@@ -345,7 +350,12 @@ fn modRetain(allocator: std.mem.Allocator, candidates: []traverse.Candidate, arg
     var result = std.ArrayList(traverse.Candidate).empty;
     for (candidates) |c| {
         // upstream Retain keeps values on exact match
-        for (retain_values) |rv| { if (std.mem.eql(u8, c.value, rv)) { try result.append(allocator, c); break; } }
+        for (retain_values) |rv| {
+            if (std.mem.eql(u8, c.value, rv)) {
+                try result.append(allocator, c);
+                break;
+            }
+        }
     }
     return result.toOwnedSlice(allocator);
 }
@@ -380,15 +390,6 @@ fn modSuppress(allocator: std.mem.Allocator, candidates: []traverse.Candidate, a
     return result.toOwnedSlice(allocator);
 }
 
-fn modUsage(allocator: std.mem.Allocator, candidates: []traverse.Candidate, usage: []const u8) ![]traverse.Candidate {
-    if (candidates.len == 0) return &.{};
-    var result = try allocator.alloc(traverse.Candidate, candidates.len);
-    for (candidates, 0..) |c, i| {
-        result[i] = if (i == 0) .{ .value = try allocator.dupe(u8, c.value), .description = try allocator.dupe(u8, usage), .style = try allocator.dupe(u8, c.style), .nospace = c.nospace, .tag = try allocator.dupe(u8, c.tag), .uid = try allocator.dupe(u8, c.uid) } else c;
-    }
-    return result;
-}
-
 fn modUid(allocator: std.mem.Allocator, candidates: []traverse.Candidate, args: []const u8) ![]traverse.Candidate {
     // $uid([scheme, host, opts...]) — build scheme://host/<path>?query per value
     const parts = try builtins.parseFlowList(allocator, args);
@@ -413,6 +414,7 @@ fn modUid(allocator: std.mem.Allocator, candidates: []traverse.Candidate, args: 
             .description = try allocator.dupe(u8, c.description),
             .style = try allocator.dupe(u8, c.style),
             .nospace = c.nospace,
+            .noprefix = c.noprefix,
             .tag = try allocator.dupe(u8, c.tag),
             .uid = try buf.toOwnedSlice(allocator),
         };
@@ -440,10 +442,12 @@ fn modSplit(allocator: std.mem.Allocator, candidates: []traverse.Candidate, args
     for (candidates) |c| {
         var last_pos: i64 = -1;
         for (delim) |d| {
-            if (std.mem.lastIndexOfScalar(u8, c.value, d)) |pos| { if (@as(i64, @intCast(pos)) > last_pos) last_pos = @as(i64, @intCast(pos)); }
+            if (std.mem.lastIndexOfScalar(u8, c.value, d)) |pos| {
+                if (@as(i64, @intCast(pos)) > last_pos) last_pos = @as(i64, @intCast(pos));
+            }
         }
         if (last_pos >= 0) {
-            try result.append(allocator, .{ .value = try allocator.dupe(u8, c.value[@as(usize, @intCast(last_pos)) + 1 ..]), .description = try allocator.dupe(u8, c.description), .style = try allocator.dupe(u8, c.style), .nospace = c.nospace, .tag = try allocator.dupe(u8, c.tag), .uid = try allocator.dupe(u8, c.uid) });
+            try result.append(allocator, .{ .value = try allocator.dupe(u8, c.value[@as(usize, @intCast(last_pos)) + 1 ..]), .description = try allocator.dupe(u8, c.description), .style = try allocator.dupe(u8, c.style), .nospace = c.nospace, .noprefix = c.noprefix, .tag = try allocator.dupe(u8, c.tag), .uid = try allocator.dupe(u8, c.uid) });
         } else {
             try result.append(allocator, c);
         }
@@ -592,7 +596,7 @@ test "modifier on static value" {
 test "split modifier returns last segment" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const candidates = try resolveMacro(arena.allocator(), std.testing.io, "a/b/c ||| $split(/)" , "", null);
+    const candidates = try resolveMacro(arena.allocator(), std.testing.io, "a/b/c ||| $split(/)", "", null);
     try std.testing.expectEqual(@as(usize, 1), candidates.len);
     try std.testing.expectEqualStrings("c", candidates[0].value);
 }

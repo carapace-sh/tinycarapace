@@ -129,6 +129,7 @@ pub fn formatOutput(allocator: std.mem.Allocator, candidates: []traverse.Candida
     const show_desc = comp_type != null and std.mem.eql(u8, comp_type.?, "63");
 
     for (candidates) |c| {
+        if (c.value.len == 0) continue; // messages are not rendered by bash
         const value = try sanitize(allocator, c.value);
         const description = try sanitize(allocator, c.description);
         if (show_desc and description.len > 0) {

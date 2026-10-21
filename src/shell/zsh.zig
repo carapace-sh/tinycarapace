@@ -116,39 +116,100 @@ pub fn generateSnippet(allocator: std.mem.Allocator, name: []const u8) ![]const 
     return buf.toOwnedSlice(allocator);
 }
 
+/// Escape a value for insertion by zsh (upstream defaultReplacer).
+fn escapeValue(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
+    var buf = std.ArrayList(u8).empty;
+    for (s) |c| {
+        switch (c) {
+            '\\', '&', '<', '>', '`', '\'', '"', '{', '}', '$', '#', '|', '?', '(', ')', ';', ' ', '[', ']', '*', '~' => {
+                try buf.append(allocator, '\\');
+                try buf.append(allocator, c);
+            },
+            else => try buf.append(allocator, c),
+        }
+    }
+    return buf.toOwnedSlice(allocator);
+}
+
+/// Escape a display string for `_describe` (upstream describeReplacer).
+fn escapeDescribe(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
+    var buf = std.ArrayList(u8).empty;
+    for (s) |c| {
+        if (c == '\\' or c == ':') try buf.append(allocator, '\\');
+        try buf.append(allocator, c);
+    }
+    return buf.toOwnedSlice(allocator);
+}
+
+/// Drop control characters that would corrupt the block protocol.
+fn sanitize(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
+    if (std.mem.indexOfAny(u8, s, "\n\r\t") == null) return s;
+    var buf = std.ArrayList(u8).empty;
+    for (s) |c| {
+        if (c != '\n' and c != '\r' and c != '\t') try buf.append(allocator, c);
+    }
+    return buf.toOwnedSlice(allocator);
+}
+
 pub fn formatOutput(allocator: std.mem.Allocator, candidates: []traverse.Candidate, _: ?[]const u8) ![]const u8 {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
     var buf: std.ArrayList(u8) = .empty;
 
-    var has_noprefix = false;
+    // Candidates with an empty value are messages (see $message).
+    var messages = std.ArrayList([]const u8).empty;
+    var values = std.ArrayList(traverse.Candidate).empty;
     for (candidates) |c| {
-        if (c.nospace) {
+        if (c.value.len == 0) {
+            if (c.description.len > 0) try messages.append(a, c.description);
+            continue;
+        }
+        try values.append(a, c);
+    }
+
+    var has_noprefix = false;
+    for (values.items) |c| {
+        if (c.noprefix) {
             has_noprefix = true;
             break;
         }
     }
 
     // Four fields: zstyle\x01message\x01noprefix\x01data
-    const zstyles = try formatZstyles(allocator, candidates);
+    const zstyles = try formatZstyles(allocator, values.items);
     try buf.appendSlice(allocator, zstyles);
     allocator.free(zstyles);
     try buf.append(allocator, '\x01');
+    for (messages.items, 0..) |message, i| {
+        if (i > 0) try buf.append(allocator, '\n');
+        try buf.appendSlice(allocator, try sanitize(a, message));
+    }
     try buf.append(allocator, '\x01');
     try buf.print(allocator, "{s}\x01", .{if (has_noprefix) "true" else "false"});
 
     // Single block: tag\x03displays\x04\x03values\x04\x02
     try buf.appendSlice(allocator, "completions");
     try buf.append(allocator, '\x03');
-    for (candidates) |c| {
-        if (c.description.len > 0) {
-            try buf.print(allocator, "{s} - {s}\n", .{ c.value, c.description });
+    for (values.items) |c| {
+        const display = try escapeDescribe(a, try sanitize(a, c.value));
+        const description = try sanitize(a, c.description);
+        if (description.len > 0) {
+            try buf.print(allocator, "{s}:{s}\n", .{ display, description });
         } else {
-            try buf.print(allocator, "{s}\n", .{c.value});
+            try buf.print(allocator, "{s}\n", .{display});
         }
     }
     try buf.append(allocator, '\x04');
     try buf.append(allocator, '\x03');
-    for (candidates) |c| {
-        try buf.print(allocator, "{s}\n", .{c.value});
+    for (values.items) |c| {
+        const quoted = try escapeDescribe(a, try escapeValue(a, try sanitize(a, c.value)));
+        if (c.nospace) {
+            try buf.print(allocator, "{s}\n", .{quoted});
+        } else {
+            try buf.print(allocator, "{s} \n", .{quoted});
+        }
     }
     try buf.append(allocator, '\x04');
     try buf.append(allocator, '\x02');
@@ -233,4 +294,39 @@ test "zsh format output" {
     // 4-field format: zstyle\x01message\x01noprefix\x01data
     try std.testing.expect(std.mem.indexOf(u8, out, "\x01\x01") != null);
     try std.testing.expect(std.mem.startsWith(u8, out, "=(#b)(json)([ ]## -- *)=0="));
+    // displays use `value:description` and values get a trailing space
+    try std.testing.expect(std.mem.indexOf(u8, out, "json:JSON format\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "json \n") != null);
+}
+
+test "zsh format output nospace and noprefix" {
+    const candidates = [_]traverse.Candidate{
+        .{ .value = "a/b", .nospace = true, .noprefix = true },
+    };
+    const out = try formatOutput(std.testing.allocator, @constCast(&candidates), null);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "true\x01") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "a/b\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "a/b \n") == null);
+}
+
+test "zsh format output messages" {
+    const candidates = [_]traverse.Candidate{
+        .{ .value = "", .description = "no matches" },
+        .{ .value = "json" },
+    };
+    const out = try formatOutput(std.testing.allocator, @constCast(&candidates), null);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\x01no matches\x01") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "json \n") != null);
+}
+
+test "zsh format output escapes special characters" {
+    const candidates = [_]traverse.Candidate{
+        .{ .value = "my file", .description = "a:b" },
+    };
+    const out = try formatOutput(std.testing.allocator, @constCast(&candidates), null);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "my\\\\ file \n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "my file:a:b\n") != null);
 }

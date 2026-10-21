@@ -346,7 +346,7 @@ fn decodeCompletion(allocator: std.mem.Allocator, val: yaml.Value) !Command.Comp
                     inner[0] = s;
                     break :blk inner;
                 },
-                else => &.{} ,
+                else => &.{},
             };
         }
         comp.positional = arr;

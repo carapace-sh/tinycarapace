@@ -7,12 +7,14 @@ const traverse = @import("traverse.zig");
 /// Append candidates that match prefix, duplicating strings into the output list.
 fn appendMatching(allocator: std.mem.Allocator, candidates: *std.ArrayList(traverse.Candidate), resolved: []const traverse.Candidate, prefix: []const u8) !void {
     for (resolved) |c| {
-        if (std.mem.startsWith(u8, c.value, prefix)) {
+        // messages have an empty value and are not filtered by the current word
+        if (c.value.len == 0 or std.mem.startsWith(u8, c.value, prefix)) {
             try candidates.append(allocator, .{
                 .value = try allocator.dupe(u8, c.value),
                 .description = try allocator.dupe(u8, c.description),
                 .style = try allocator.dupe(u8, c.style),
                 .nospace = c.nospace,
+                .noprefix = c.noprefix,
                 .tag = try allocator.dupe(u8, c.tag),
                 .uid = try allocator.dupe(u8, c.uid),
             });
@@ -22,9 +24,10 @@ fn appendMatching(allocator: std.mem.Allocator, candidates: *std.ArrayList(trave
 
 /// Resolve a single raw value string, append duplicated candidates that match prefix.
 /// Handles modifier chains, including context modifiers that affect how the base
-/// action is resolved: $shift(n) drops the first n consumed positional args and
-/// $filterargs removes candidates matching a consumed positional arg.
-fn resolveSingleValue(allocator: std.mem.Allocator, io: std.Io, candidates: *std.ArrayList(traverse.Candidate), raw: []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map, flag_values: ?*const std.StringHashMap([]const u8), positional_args: []const []const u8) !void {
+/// action is resolved: $shift(n) drops the first n consumed positional args,
+/// $filterargs removes candidates matching a consumed positional arg and
+/// $usage sets the action usage.
+fn resolveSingleValue(allocator: std.mem.Allocator, io: std.Io, candidates: *std.ArrayList(traverse.Candidate), raw: []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map, flag_values: ?*const std.StringHashMap([]const u8), positional_args: []const []const u8, meta: ?*traverse.Meta) !void {
     // Split modifier chain: "base ||| mod1 ||| mod2"
     var base_raw = raw;
     var mods = std.ArrayList([]const u8).empty;
@@ -48,6 +51,8 @@ fn resolveSingleValue(allocator: std.mem.Allocator, io: std.Io, candidates: *std
             } else if (std.mem.startsWith(u8, m, "$shift(") and std.mem.endsWith(u8, m, ")")) {
                 const n = std.fmt.parseInt(usize, m[7 .. m.len - 1], 10) catch 0;
                 args = if (n >= args.len) args[args.len..] else args[n..];
+            } else if (std.mem.startsWith(u8, m, "$usage(") and std.mem.endsWith(u8, m, ")")) {
+                if (meta) |result_meta| result_meta.usage = m[7 .. m.len - 1];
             } else {
                 try kept.append(allocator, m);
             }
@@ -126,9 +131,13 @@ pub fn resolveValues(allocator: std.mem.Allocator, io: std.Io, values: []const [
 }
 
 pub fn resolveValuesWithEnv(allocator: std.mem.Allocator, io: std.Io, values: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map, flag_values: ?*const std.StringHashMap([]const u8), positional_args: []const []const u8) ![]traverse.Candidate {
+    return resolveValuesWithEnvMeta(allocator, io, values, prefix, environ_map, flag_values, positional_args, null);
+}
+
+pub fn resolveValuesWithEnvMeta(allocator: std.mem.Allocator, io: std.Io, values: []const []const u8, prefix: []const u8, environ_map: ?*const std.process.Environ.Map, flag_values: ?*const std.StringHashMap([]const u8), positional_args: []const []const u8, meta: ?*traverse.Meta) ![]traverse.Candidate {
     var candidates = std.ArrayList(traverse.Candidate).empty;
     for (values) |v| {
-        try resolveSingleValue(allocator, io, &candidates, v, prefix, environ_map, flag_values, positional_args);
+        try resolveSingleValue(allocator, io, &candidates, v, prefix, environ_map, flag_values, positional_args, meta);
     }
     return candidates.toOwnedSlice(allocator);
 }
@@ -136,9 +145,15 @@ pub fn resolveValuesWithEnv(allocator: std.mem.Allocator, io: std.Io, values: []
 pub fn hasNonPosixFlags(cmd: spec.Command) bool {
     var current = cmd;
     while (true) {
-        for (current.flags) |f| { if (f.isNonPosix()) return true; }
-        for (current.persistent_flags) |f| { if (f.isNonPosix()) return true; }
-        if (current.parent) |p| { current = p.*; } else break;
+        for (current.flags) |f| {
+            if (f.isNonPosix()) return true;
+        }
+        for (current.persistent_flags) |f| {
+            if (f.isNonPosix()) return true;
+        }
+        if (current.parent) |p| {
+            current = p.*;
+        } else break;
     }
     return false;
 }
@@ -153,12 +168,16 @@ pub fn completeFlagsWithExclusive(allocator: std.mem.Allocator, cmd: spec.Comman
     // Own local + persistent flags
     for (cmd.flags) |f| {
         if (f.hidden) continue;
-        if (consumed_flags) |cf| { if (isFlagExcluded(cmd, f, cf)) continue; }
+        if (consumed_flags) |cf| {
+            if (isFlagExcluded(cmd, f, cf)) continue;
+        }
         try addFlagCandidate(allocator, &candidates, f, prefix, uid_base);
     }
     for (cmd.persistent_flags) |f| {
         if (f.hidden) continue;
-        if (consumed_flags) |cf| { if (isFlagExcluded(cmd, f, cf)) continue; }
+        if (consumed_flags) |cf| {
+            if (isFlagExcluded(cmd, f, cf)) continue;
+        }
         try addFlagCandidate(allocator, &candidates, f, prefix, uid_base);
     }
     // Ancestors: only persistent flags are inherited
@@ -166,7 +185,9 @@ pub fn completeFlagsWithExclusive(allocator: std.mem.Allocator, cmd: spec.Comman
     while (current) |p| {
         for (p.persistent_flags) |f| {
             if (f.hidden) continue;
-            if (consumed_flags) |cf| { if (isFlagExcluded(p.*, f, cf)) continue; }
+            if (consumed_flags) |cf| {
+                if (isFlagExcluded(p.*, f, cf)) continue;
+            }
             try addFlagCandidate(allocator, &candidates, f, prefix, uid_base);
         }
         current = p.parent;
@@ -251,7 +272,12 @@ pub fn completeShorthandSeriesFull(allocator: std.mem.Allocator, io: std.Io, cmd
         for (current.flags) |f| {
             if (f.hidden or f.shorthand.len == 0) continue;
             var already_used = false;
-            for (shorthand_part) |c| { if (f.shorthand.len > 0 and f.shorthand[0] == c) { already_used = true; break; } }
+            for (shorthand_part) |c| {
+                if (f.shorthand.len > 0 and f.shorthand[0] == c) {
+                    already_used = true;
+                    break;
+                }
+            }
             if (already_used) continue;
             const form = try std.fmt.allocPrint(allocator, "-{s}{s}", .{ shorthand_part, f.shorthand });
             try candidates.append(allocator, .{ .value = form, .description = f.description });
@@ -259,12 +285,19 @@ pub fn completeShorthandSeriesFull(allocator: std.mem.Allocator, io: std.Io, cmd
         for (current.persistent_flags) |f| {
             if (f.hidden or f.shorthand.len == 0) continue;
             var already_used = false;
-            for (shorthand_part) |c| { if (f.shorthand.len > 0 and f.shorthand[0] == c) { already_used = true; break; } }
+            for (shorthand_part) |c| {
+                if (f.shorthand.len > 0 and f.shorthand[0] == c) {
+                    already_used = true;
+                    break;
+                }
+            }
             if (already_used) continue;
             const form = try std.fmt.allocPrint(allocator, "-{s}{s}", .{ shorthand_part, f.shorthand });
             try candidates.append(allocator, .{ .value = form, .description = f.description });
         }
-        if (current.parent) |p| { current = p.*; } else break;
+        if (current.parent) |p| {
+            current = p.*;
+        } else break;
     }
     return candidates.toOwnedSlice(allocator);
 }
@@ -322,4 +355,36 @@ test "filterargs respects shift" {
     try std.testing.expectEqual(@as(usize, 2), c.len);
     try std.testing.expectEqualStrings("first", c[0].value);
     try std.testing.expectEqualStrings("third", c[1].value);
+}
+
+test "noprefix preserves values and sets the flag" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const values = [_][]const u8{"[a/b] ||| $noprefix(/)"};
+    const c = try resolveValuesWithEnv(arena.allocator(), std.testing.io, &values, "a", null, null, &.{});
+    try std.testing.expectEqual(@as(usize, 1), c.len);
+    try std.testing.expectEqualStrings("a/b", c[0].value);
+    try std.testing.expect(c[0].noprefix);
+    try std.testing.expect(!c[0].nospace);
+}
+
+test "usage modifier sets meta usage" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var meta = traverse.Meta{};
+    const values = [_][]const u8{"[a] ||| $usage(mycmd <file>)"};
+    const c = try resolveValuesWithEnvMeta(arena.allocator(), std.testing.io, &values, "", null, null, &.{}, &meta);
+    try std.testing.expectEqual(@as(usize, 1), c.len);
+    try std.testing.expectEqualStrings("a", c[0].value);
+    try std.testing.expectEqualStrings("mycmd <file>", meta.usage);
+}
+
+test "messages are not filtered by the current word" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const values = [_][]const u8{"$message(nothing to see)"};
+    const c = try resolveValuesWithEnv(arena.allocator(), std.testing.io, &values, "zzz", null, null, &.{});
+    try std.testing.expectEqual(@as(usize, 1), c.len);
+    try std.testing.expectEqualStrings("", c[0].value);
+    try std.testing.expectEqualStrings("nothing to see", c[0].description);
 }

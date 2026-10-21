@@ -20,8 +20,12 @@ fn loadSpecOrNull(allocator: std.mem.Allocator, io: std.Io, name: []const u8, en
 /// Build completion candidates, falling back to bridges if no spec is found.
 /// `cmdline_args` includes the command name as the first element (like traverse.complete expects).
 fn completeWithFallback(allocator: std.mem.Allocator, io: std.Io, name: []const u8, cmdline_args: []const []const u8, environ_map: *const std.process.Environ.Map) ![]traverse.Candidate {
+    return completeWithFallbackMeta(allocator, io, name, cmdline_args, environ_map, null);
+}
+
+fn completeWithFallbackMeta(allocator: std.mem.Allocator, io: std.Io, name: []const u8, cmdline_args: []const []const u8, environ_map: *const std.process.Environ.Map, meta: ?*traverse.Meta) ![]traverse.Candidate {
     if (try loadSpecOrNull(allocator, io, name, environ_map)) |cmd| {
-        return try traverse.completeWithEnv(allocator, io, cmd, cmdline_args, environ_map);
+        return try traverse.completeWithEnvMeta(allocator, io, cmd, cmdline_args, environ_map, meta);
     }
     // No spec found — try CARAPACE_BRIDGES fallback
     if (environ_map.get("CARAPACE_BRIDGES")) |bridges| {
@@ -39,10 +43,53 @@ fn completeWithFallback(allocator: std.mem.Allocator, io: std.Io, name: []const 
     return &.{};
 }
 
+/// Convert a child process termination state into an exit code.
+fn exitCode(term: std.process.Child.Term) u8 {
+    return switch (term) {
+        .exited => |code| code,
+        .signal => |sig| @intCast(@min(128 + @as(u32, @intFromEnum(sig)), 255)),
+        .stopped => |sig| @intCast(@min(128 + @as(u32, @intFromEnum(sig)), 255)),
+        .unknown => 1,
+    };
+}
+
+/// Run a child process, forward its output and return its exit code.
+fn runAndForward(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, environ_map: ?*const std.process.Environ.Map) !u8 {
+    const result = std.process.run(allocator, io, .{
+        .argv = argv,
+        .stdout_limit = .limited(1024 * 1024),
+        .stderr_limit = .limited(1024 * 1024),
+        .environ_map = environ_map,
+    }) catch |err| {
+        std.debug.print("error: command execution failed: {s}\n", .{@errorName(err)});
+        return 1;
+    };
+    std.Io.File.stdout().writeStreamingAll(io, result.stdout) catch {};
+    if (result.stderr.len > 0) std.Io.File.stderr().writeStreamingAll(io, result.stderr) catch {};
+    allocator.free(result.stdout);
+    allocator.free(result.stderr);
+    return exitCode(result.term);
+}
+
+/// Build the interpreter argv from a shebang line (e.g. `#!/usr/bin/env python3`).
+fn shebangArgv(allocator: std.mem.Allocator, run: []const u8, script_path: []const u8, extra_args: *const std.ArrayList([]const u8)) ![]const []const u8 {
+    var argv = std.ArrayList([]const u8).empty;
+    const line_end = std.mem.indexOfScalar(u8, run, '\n') orelse run.len;
+    const shebang = std.mem.trim(u8, run[2..line_end], " \t\r");
+    if (shebang.len > 0) {
+        var it = std.mem.tokenizeAny(u8, shebang, " \t");
+        while (it.next()) |part| try argv.append(allocator, part);
+    }
+    if (argv.items.len == 0) try argv.append(allocator, "sh");
+    try argv.append(allocator, script_path);
+    for (extra_args.items) |a| try argv.append(allocator, a);
+    return argv.toOwnedSlice(allocator);
+}
+
 /// Execute a command's `run` field.
-/// Supports: alias strings, macro ($(...)), and scripts (#!/...)
+/// Supports: alias strings, shell macros ($(...), $sh(...), ...), and scripts (#!).
 fn runCommand(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, extra_args: *const std.ArrayList([]const u8), environ_map: ?*const std.process.Environ.Map) !u8 {
-    const run = cmd.run;
+    const run = std.mem.trim(u8, cmd.run, " \t");
 
     // Script mode: starts with #!
     if (run.len >= 2 and run[0] == '#' and run[1] == '!') {
@@ -70,73 +117,29 @@ fn runCommand(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, extra
         script_file.close(io);
         defer std.Io.Dir.cwd().deleteFile(io, script_path) catch {};
 
-        // Build argv: sh script_path <extra_args>
-        var argv = std.ArrayList([]const u8).empty;
-        try argv.append(allocator, "sh");
-        try argv.append(allocator, script_path);
-        for (extra_args.items) |a| try argv.append(allocator, a);
-
-        const result = std.process.run(allocator, io, .{
-            .argv = argv.items,
-            .stdout_limit = .limited(1024 * 1024),
-            .stderr_limit = .limited(1024 * 1024),
-            .environ_map = environ_map,
-        }) catch |err| {
-            std.debug.print("error: script execution failed: {s}\n", .{@errorName(err)});
-            return 1;
-        };
-        std.Io.File.stdout().writeStreamingAll(io, result.stdout) catch {};
-        if (result.stderr.len > 0) std.Io.File.stderr().writeStreamingAll(io, result.stderr) catch {};
-        allocator.free(result.stdout);
-        allocator.free(result.stderr);
-        return 0;
+        const argv = try shebangArgv(allocator, run, script_path, extra_args);
+        return runAndForward(allocator, io, argv, environ_map);
     }
 
-    // Macro mode: starts with $(
-    if (run.len >= 2 and run[0] == '$' and run[1] == '(') {
-        if (run[run.len - 1] == ')') {
-            const command = run[2 .. run.len - 1];
-            if (command.len > 0) {
-                // Expand variables in the command
-                var flag_values = std.StringHashMap([]const u8).init(allocator);
-                var positional_args = std.ArrayList([]const u8).empty;
-                for (extra_args.items, 0..) |a, i| {
-                    try positional_args.append(allocator, a);
-                    const key = try std.fmt.allocPrint(allocator, "C_ARG{d}", .{i});
-                    try flag_values.put(key, a);
-                }
+    // Shell macros: $(cmd), $sh(cmd), $bash(cmd), $pwsh(cmd), ...
+    const shell_macros = comptime [_]struct { prefix: []const u8, exe: []const u8, flag: []const u8 }{
+        .{ .prefix = "$(", .exe = "sh", .flag = "-c" },
+        .{ .prefix = "$sh(", .exe = "sh", .flag = "-c" },
+        .{ .prefix = "$bash(", .exe = "bash", .flag = "-c" },
+        .{ .prefix = "$zsh(", .exe = "zsh", .flag = "-c" },
+        .{ .prefix = "$fish(", .exe = "fish", .flag = "-c" },
+        .{ .prefix = "$elvish(", .exe = "elvish", .flag = "-c" },
+        .{ .prefix = "$nu(", .exe = "nu", .flag = "-c" },
+        .{ .prefix = "$osh(", .exe = "osh", .flag = "-c" },
+        .{ .prefix = "$xonsh(", .exe = "xonsh", .flag = "-c" },
+        .{ .prefix = "$pwsh(", .exe = "pwsh", .flag = "-Command" },
+        .{ .prefix = "$cmd(", .exe = "cmd", .flag = "/c" },
+    };
+    inline for (shell_macros) |macro| {
+        if (run.len > macro.prefix.len and run[run.len - 1] == ')' and std.mem.startsWith(u8, run, macro.prefix)) {
+            const command = run[macro.prefix.len .. run.len - 1];
+            if (command.len == 0) return 0;
 
-                const expanded = try traverse.expandVariables(allocator, command, &flag_values, positional_args.items, "");
-                defer allocator.free(expanded);
-
-                const result = std.process.run(allocator, io, .{
-                    .argv = &.{ "sh", "-c", expanded },
-                    .stdout_limit = .limited(1024 * 1024),
-                    .stderr_limit = .limited(1024 * 1024),
-                    .environ_map = environ_map,
-                }) catch |err| {
-                    std.debug.print("error: macro execution failed: {s}\n", .{@errorName(err)});
-                    return 1;
-                };
-                std.Io.File.stdout().writeStreamingAll(io, result.stdout) catch {};
-                if (result.stderr.len > 0) std.Io.File.stderr().writeStreamingAll(io, result.stderr) catch {};
-                allocator.free(result.stdout);
-                allocator.free(result.stderr);
-                return 0;
-            }
-        }
-    }
-
-    // Alias mode: JSON array string like "[tail, --lines, '${NUM:-1}']" or plain string like "tail -f"
-    // Parse as space-separated or JSON array
-    var argv = std.ArrayList([]const u8).empty;
-
-    if (run.len >= 2 and run[0] == '[') {
-        // JSON array format: parse it
-        const items = try parseRunArgs(allocator, run);
-        defer allocator.free(items);
-        for (items) |item| {
-            // Expand variables in each arg
             var flag_values = std.StringHashMap([]const u8).init(allocator);
             var positional_args = std.ArrayList([]const u8).empty;
             for (extra_args.items, 0..) |a, i| {
@@ -144,6 +147,28 @@ fn runCommand(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, extra
                 const key = try std.fmt.allocPrint(allocator, "C_ARG{d}", .{i});
                 try flag_values.put(key, a);
             }
+            const expanded = try traverse.expandVariables(allocator, command, &flag_values, positional_args.items, "");
+            defer allocator.free(expanded);
+
+            return runAndForward(allocator, io, &.{ macro.exe, macro.flag, expanded }, environ_map);
+        }
+    }
+
+    // Alias mode: JSON array string like "[tail, --lines, '${NUM:-1}']" or plain string like "tail -f"
+    var argv = std.ArrayList([]const u8).empty;
+
+    if (run.len >= 2 and run[0] == '[') {
+        const items = try parseRunArgs(allocator, run);
+        defer allocator.free(items);
+
+        var flag_values = std.StringHashMap([]const u8).init(allocator);
+        var positional_args = std.ArrayList([]const u8).empty;
+        for (extra_args.items, 0..) |a, i| {
+            try positional_args.append(allocator, a);
+            const key = try std.fmt.allocPrint(allocator, "C_ARG{d}", .{i});
+            try flag_values.put(key, a);
+        }
+        for (items) |item| {
             const expanded = try traverse.expandVariables(allocator, item, &flag_values, positional_args.items, "");
             defer allocator.free(expanded);
             // Store a stable copy: `expanded` is freed at the end of this iteration
@@ -151,12 +176,9 @@ fn runCommand(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, extra
         }
     } else {
         // Plain string: space-separated
-        var it = std.mem.splitScalar(u8, run, ' ');
+        var it = std.mem.tokenizeAny(u8, run, " \t");
         while (it.next()) |part| {
-            const trimmed = std.mem.trim(u8, part, " \t");
-            if (trimmed.len > 0) {
-                try argv.append(allocator, try allocator.dupe(u8, trimmed));
-            }
+            try argv.append(allocator, try allocator.dupe(u8, part));
         }
     }
 
@@ -168,20 +190,7 @@ fn runCommand(allocator: std.mem.Allocator, io: std.Io, cmd: spec.Command, extra
         return 1;
     }
 
-    const result = std.process.run(allocator, io, .{
-        .argv = argv.items,
-        .stdout_limit = .limited(1024 * 1024),
-        .stderr_limit = .limited(1024 * 1024),
-        .environ_map = environ_map,
-    }) catch |err| {
-        std.debug.print("error: command execution failed: {s}\n", .{@errorName(err)});
-        return 1;
-    };
-    std.Io.File.stdout().writeStreamingAll(io, result.stdout) catch {};
-    if (result.stderr.len > 0) std.Io.File.stderr().writeStreamingAll(io, result.stderr) catch {};
-    allocator.free(result.stdout);
-    allocator.free(result.stderr);
-    return 0;
+    return runAndForward(allocator, io, argv.items, environ_map);
 }
 
 /// Parse a JSON array of string arguments: `[tail, --lines, '${NUM:-1}']`
@@ -228,7 +237,13 @@ pub fn main(init: std.process.Init) !u8 {
 
     const argv = init.minimal.args.vector;
     if (argv.len < 2) {
-        std.debug.print("usage: carapace-tiny _carapace [bash] | <name> (bash|run|export) [<name> <args...>]\n", .{});
+        std.debug.print(
+            "usage: carapace-tiny _carapace [bash|zsh|fish|powershell]\n" ++
+                "       carapace-tiny <name> [bash|zsh|fish|powershell] [<name> <args...>]\n" ++
+                "       carapace-tiny <name> export [<name> <args...>]\n" ++
+                "       carapace-tiny <name> run [<args...>]\n",
+            .{},
+        );
         return 1;
     }
 
@@ -271,8 +286,9 @@ pub fn main(init: std.process.Init) !u8 {
             }
         }
 
-        const candidates = try completeWithFallback(arena.allocator(), init.io, name, cmdline_args.items, init.environ_map);
-        const out = try export_shell.formatOutput(arena.allocator(), candidates);
+        var meta = traverse.Meta{};
+        const candidates = try completeWithFallbackMeta(arena.allocator(), init.io, name, cmdline_args.items, init.environ_map, &meta);
+        const out = try export_shell.formatOutput(arena.allocator(), candidates, meta.usage);
         std.Io.File.stdout().writeStreamingAll(init.io, out) catch {};
         return 0;
     }
@@ -308,23 +324,13 @@ pub fn main(init: std.process.Init) !u8 {
             }
 
             const specs = try spec.discoverSpecs(init.io, init.environ_map, arena.allocator());
-            const spec_info = spec.findSpec(specs, name) orelse {
+            const has_spec = spec.findSpec(specs, name) != null;
+            if (!has_spec and init.environ_map.get("CARAPACE_BRIDGES") == null) {
                 std.debug.print("error: unknown command: {s}\n", .{name});
                 return 1;
-            };
+            }
 
-            const content = std.Io.Dir.cwd().readFileAlloc(init.io, spec_info.path, allocator, .limited(1024 * 1024)) catch {
-                std.debug.print("error: cannot read spec file: {s}\n", .{spec_info.path});
-                return 1;
-            };
-            defer allocator.free(content);
-
-            const cmd = spec.loadSpec(arena.allocator(), content) catch |err| {
-                std.debug.print("error: cannot parse spec: {s}\n", .{@errorName(err)});
-                return 1;
-            };
-
-            const candidates = try traverse.completeWithEnv(arena.allocator(), init.io, cmd, cmdline_args.items, init.environ_map);
+            const candidates = try completeWithFallback(arena.allocator(), init.io, name, cmdline_args.items, init.environ_map);
             const comp_type = init.environ_map.get("COMP_TYPE");
             const out = try shell.mod.formatOutput(arena.allocator(), candidates, comp_type);
             std.Io.File.stdout().writeStreamingAll(init.io, out) catch {};
@@ -406,4 +412,21 @@ test "parse run args empty" {
     defer arena.deinit();
     const args = try parseRunArgs(arena.allocator(), "[]");
     try std.testing.expectEqual(@as(usize, 0), args.len);
+}
+
+test "run mode forwards the exit code" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var extra_args = std.ArrayList([]const u8).empty;
+
+    try std.testing.expectEqual(@as(u8, 1), try runCommand(arena.allocator(), std.testing.io, .{ .name = "x", .run = "false" }, &extra_args, null));
+    try std.testing.expectEqual(@as(u8, 3), try runCommand(arena.allocator(), std.testing.io, .{ .name = "x", .run = "$sh(exit 3)" }, &extra_args, null));
+}
+
+test "run mode honors the shebang" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var extra_args = std.ArrayList([]const u8).empty;
+
+    try std.testing.expectEqual(@as(u8, 7), try runCommand(arena.allocator(), std.testing.io, .{ .name = "x", .run = "#!/bin/sh\nexit 7\n" }, &extra_args, null));
 }

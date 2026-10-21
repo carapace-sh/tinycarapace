@@ -9,8 +9,14 @@ pub const Candidate = struct {
     description: []const u8 = "",
     style: []const u8 = "",
     nospace: bool = false,
+    noprefix: bool = false,
     tag: []const u8 = "",
     uid: []const u8 = "",
+};
+
+/// Action-level metadata that is not attached to individual candidates.
+pub const Meta = struct {
+    usage: []const u8 = "",
 };
 
 /// Split a raw value string into (value, description, style) using tab separators.
@@ -95,6 +101,10 @@ pub fn complete(allocator: std.mem.Allocator, io: std.Io, root: spec.Command, cm
 }
 
 pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Command, cmdline: []const []const u8, environ_map: ?*const std.process.Environ.Map) ![]Candidate {
+    return completeWithEnvMeta(allocator, io, root, cmdline, environ_map, null);
+}
+
+pub fn completeWithEnvMeta(allocator: std.mem.Allocator, io: std.Io, root: spec.Command, cmdline: []const []const u8, environ_map: ?*const std.process.Environ.Map, meta: ?*Meta) ![]Candidate {
     if (cmdline.len == 0) return &.{};
 
     // First arg is the command name itself — skip it
@@ -259,7 +269,10 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
             if (std.mem.indexOfScalar(u8, value, '=')) |eq| {
                 const flag_name = value[2..eq];
                 const prefix = value[eq + 1 ..];
-                return resolve.completeFlagValueWithPrefixFull(allocator, io, current, flag_name, prefix, environ_map, &flag_values, positional_args.items);
+                if (current.findFlag(flag_name)) |f| {
+                    return resolve.completeFlagValueWithPrefixFull(allocator, io, current, f.name(), prefix, environ_map, &flag_values, positional_args.items);
+                }
+                return &.{};
             }
             return resolve.completeFlagsWithExclusive(allocator, current, value, &consumed_flag_names, root_name, path.items);
         }
@@ -272,8 +285,8 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
         if (std.mem.indexOfScalar(u8, value, '=')) |eq| {
             const flag_name = value[1..eq];
             const prefix = value[eq + 1 ..];
-            if (current.findFlag(flag_name)) |_| {
-                return resolve.completeFlagValueWithPrefixFull(allocator, io, current, flag_name, prefix, environ_map, &flag_values, positional_args.items);
+            if (current.findFlag(flag_name)) |f| {
+                return resolve.completeFlagValueWithPrefixFull(allocator, io, current, f.name(), prefix, environ_map, &flag_values, positional_args.items);
             }
         }
         // Multi-char single-dash: could be non-POSIX flag or shorthand series.
@@ -294,10 +307,10 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
         const dash_idx = dash_count;
         if (dash_idx < current.completion.dash.len) {
             const pos = current.completion.dash[dash_idx];
-            return resolve.resolveValuesWithEnv(allocator, io, pos, value, environ_map, &flag_values, positional_args.items);
+            return resolve.resolveValuesWithEnvMeta(allocator, io, pos, value, environ_map, &flag_values, positional_args.items, meta);
         }
         if (current.completion.dashany.len > 0) {
-            return resolve.resolveValuesWithEnv(allocator, io, current.completion.dashany, value, environ_map, &flag_values, positional_args.items);
+            return resolve.resolveValuesWithEnvMeta(allocator, io, current.completion.dashany, value, environ_map, &flag_values, positional_args.items, meta);
         }
         // Fall through to positional/positionalany if no dash completions defined
     }
@@ -317,7 +330,7 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
         }
         if (current.completion.positional.len > 0) {
             const pos = current.completion.positional[0];
-            const resolved = try resolve.resolveValuesWithEnv(allocator, io, pos, value, environ_map, &flag_values, positional_args.items);
+            const resolved = try resolve.resolveValuesWithEnvMeta(allocator, io, pos, value, environ_map, &flag_values, positional_args.items, meta);
             try candidates.appendSlice(allocator, resolved);
             allocator.free(resolved);
         }
@@ -326,11 +339,11 @@ pub fn completeWithEnv(allocator: std.mem.Allocator, io: std.Io, root: spec.Comm
 
     if (positional_count < current.completion.positional.len) {
         const pos = current.completion.positional[positional_count];
-        return resolve.resolveValuesWithEnv(allocator, io, pos, value, environ_map, &flag_values, positional_args.items);
+        return resolve.resolveValuesWithEnvMeta(allocator, io, pos, value, environ_map, &flag_values, positional_args.items, meta);
     }
 
     if (current.completion.positionalany.len > 0) {
-        return resolve.resolveValuesWithEnv(allocator, io, current.completion.positionalany, value, environ_map, &flag_values, positional_args.items);
+        return resolve.resolveValuesWithEnvMeta(allocator, io, current.completion.positionalany, value, environ_map, &flag_values, positional_args.items, meta);
     }
 
     // Bridge fallback: if no completions found and command has a run field,
@@ -407,10 +420,20 @@ pub fn resolveSpec(allocator: std.mem.Allocator, io: std.Io, macro: []const u8, 
     return completeWithEnv(allocator, io, cmd, &.{ spec_path, prefix }, environ_map) catch &.{};
 }
 
+/// Quote a bridge argument so commas, parentheses and quotes cannot break
+/// the `$bridge.<name>(...)` macro syntax.
+fn appendMacroArg(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), arg: []const u8) !void {
+    try buf.append(allocator, '\'');
+    for (arg) |c| {
+        if (c == '\\' or c == '\'') try buf.append(allocator, '\\');
+        try buf.append(allocator, c);
+    }
+    try buf.append(allocator, '\'');
+}
+
 /// Try implicit bridge fallback — tries each bridge from CARAPACE_BRIDGES for the given command.
 /// `args` is the consumed args (no partial word), `prefix` is the partial word being completed.
 pub fn resolveBridgeFallback(allocator: std.mem.Allocator, io: std.Io, cmd_name: []const u8, args: []const []const u8, prefix: []const u8, bridge_names: []const []const u8, environ_map: ?*const std.process.Environ.Map) ![]Candidate {
-
     for (bridge_names) |bridge_name| {
         const trimmed = std.mem.trim(u8, bridge_name, " \t");
         if (trimmed.len == 0) continue;
@@ -430,10 +453,10 @@ pub fn resolveBridgeFallback(allocator: std.mem.Allocator, io: std.Io, cmd_name:
         try macro.append(allocator, trimmed[0] - ('a' - 'A'));
         try macro.appendSlice(allocator, trimmed[1..]);
         try macro.append(allocator, '(');
-        try macro.appendSlice(allocator, cmd_name);
+        try appendMacroArg(allocator, &macro, cmd_name);
         for (args) |a| {
             try macro.appendSlice(allocator, ", ");
-            try macro.appendSlice(allocator, a);
+            try appendMacroArg(allocator, &macro, a);
         }
         try macro.append(allocator, ')');
         defer macro.deinit(allocator);
@@ -586,6 +609,24 @@ test "complete flag value with --flag= prefix" {
     defer arena.deinit();
     const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
     const result = try complete(arena.allocator(), std.testing.io, cmd, &.{ "mycmd", "--output=fi" });
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqualStrings("file1", result[0].value);
+    try std.testing.expectEqualStrings("file2", result[1].value);
+}
+
+test "complete flag value with shorthand= prefix" {
+    const yaml_src =
+        \\name: mycmd
+        \\flags:
+        \\  -o, --output=: output file
+        \\completion:
+        \\  flag:
+        \\    output: [file1, file2]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try @import("spec.zig").loadSpec(arena.allocator(), yaml_src);
+    const result = try complete(arena.allocator(), std.testing.io, cmd, &.{ "mycmd", "-o=fi" });
     try std.testing.expectEqual(@as(usize, 2), result.len);
     try std.testing.expectEqualStrings("file1", result[0].value);
     try std.testing.expectEqualStrings("file2", result[1].value);

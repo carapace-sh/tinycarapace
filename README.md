@@ -15,10 +15,10 @@ mkdir -p ~/.config/carapace/specs
 cp myapp.yaml ~/.config/carapace/specs/
 
 # Source the init script to register all completers
-source <(tinycarapace _carapace bash)
+source <(carapace-tiny _carapace bash)
 
 # Or source a single completer
-source <(tinycarapace myapp bash)
+source <(carapace-tiny myapp bash)
 ```
 
 For commands without a spec file, set `CARAPACE_BRIDGES` to fall back to
@@ -26,17 +26,20 @@ shell-native completions (bash, fish, zsh, inshellisense):
 
 ```bash
 export CARAPACE_BRIDGES=bash
-tinycarapace git export ""               # uses bash's git completion
+carapace-tiny git export ""               # uses bash's git completion
 ```
+
+For spec-backed commands the export command line starts with the command name
+again: `carapace-tiny myapp export myapp <args...>`.
 
 ## Build
 
-Requires [Zig 0.15+](https://ziglang.org/download/).
+Requires [Zig 0.16+](https://ziglang.org/download/).
 
 ```bash
 zig build                                     # Debug build
-zig build -Doptimize=ReleaseFast && strip zig-out/bin/tinycarapace  # 779 KB
-zig build -Doptimize=ReleaseSmall && strip zig-out/bin/tinycarapace  # 270 KB
+zig build -Doptimize=ReleaseFast && strip zig-out/bin/carapace-tiny  # ~920 KB
+zig build -Doptimize=ReleaseSmall && strip zig-out/bin/carapace-tiny  # ~336 KB
 zig build -Dtarget=x86_64-linux-musl          # Cross-compile (no extra toolchain)
 zig build -Dtarget=aarch64-linux-musl         # Cross-compile for ARM64
 ```
@@ -44,11 +47,11 @@ zig build -Dtarget=aarch64-linux-musl         # Cross-compile for ARM64
 ## Usage
 
 ```
-tinycarapace _carapace [bash|zsh|fish|powershell]  # Init script for all specs
-tinycarapace <name> <shell>                                   # Snippet for one command
-tinycarapace <name> <shell> <name> <args...>                  # Completion callback
-tinycarapace <name> export [<args...>]                  # JSON export (carapace format)
-tinycarapace <name> run [<args...>]                     # Execute spec's run field
+carapace-tiny _carapace [bash|zsh|fish|powershell]   # Init script for all specs
+carapace-tiny <name> <shell>                         # Snippet for one command
+carapace-tiny <name> <shell> <name> <args...>        # Completion callback
+carapace-tiny <name> export [<name> <args...>]       # JSON export (carapace format)
+carapace-tiny <name> run [<args...>]                 # Execute spec's run field
 ```
 
 Specs are discovered from these directories (in order of precedence):
@@ -64,29 +67,29 @@ automatically.
 
 1. Specs are YAML files following the
    [carapace-spec](https://github.com/carapace-sh/carapace-spec) format
-2. `tinycarapace _carapace bash` generates a `complete -F` function that
+2. `carapace-tiny _carapace bash` generates a `complete -F` function that
    registers all your commands
-3. On TAB press, the function calls `tinycarapace <name> bash <name> <args...>`
+3. On TAB press, the function calls `carapace-tiny <name> bash <name> <args...>`
    which traverses the parsed spec tree and returns matching candidates
 4. If no spec is found, `CARAPACE_BRIDGES` provides shell-native fallback
 
 ## Status
 
-Everything is implemented. See [plan.md](plan.md) and [AGENTS.md](AGENTS.md) for
-full details.
+Core functionality is implemented; a few macros are simplified compared to
+carapace. See [plan.md](plan.md) and [AGENTS.md](AGENTS.md) for details.
 
 | Feature | Status |
 |---------|--------|
 | YAML parsing, spec decoding, flag parsing | ✅ |
 | Argument traversal (subcommands, flags, positionals, dash) | ✅ |
 | Shell snippets (bash, zsh, fish, powershell) | ✅ |
-| Macro system (`$sh`, `$files`, `$directories`, `$executables`, `$message`, `$chdir`, `$list`, `$multiparts`, `$split`, `$bridge.*`) | ✅ |
-| Modifier chains (`$prefix`, `$suffix`, `$nospace`, `$style`, `$tag`, `$filter`, `$retain`, `$shift`, `$split`, `$usage`, `$uid`, `$suppress`) | ✅ |
+| Macro system (`$sh`, `$files`, `$directories`, `$executables`, `$message`, `$chdir`, `$list`, `$multiparts`, `$bridge.*`) | ✅ (nested paths, suffix filters) |
+| Modifier chains (`$prefix`, `$suffix`, `$nospace`, `$noprefix`, `$style`, `$tag`, `$filter`, `$retain`, `$shift`, `$filterargs`, `$usage`, `$uid`, `$suppress`) | ✅ |
 | Variable expansion (`${C_ARG0}`, `${C_FLAG_NAME}`, `${C_VALUE}`, `${VAR:-default}`) | ✅ |
 | Run mode (alias, macro, script) | ✅ |
 | Bridge fallback (`CARAPACE_BRIDGES`) | ✅ |
 | Persistent flags, exclusive flags, group, nargs | ✅ |
-| Binary size (ReleaseSmall, stripped) | **270 KB** |
+| Binary size (ReleaseSmall, stripped) | **~336 KB** |
 
 ## Spec format
 

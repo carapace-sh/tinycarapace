@@ -3,7 +3,6 @@ const std = @import("std");
 /// Minimal port of carapace's style system (pkg/style + elvish ui subset).
 /// SGR output contains bare numeric codes ("1;31") suitable for zsh
 /// list-colors; callers wrap with ESC sequences where needed.
-
 const Color = union(enum) {
     ansi: u8,
     ansi_bright: u8,
@@ -82,30 +81,84 @@ fn parseOneStyling(state: *State, name: []const u8) bool {
     }
     if (std.mem.startsWith(u8, name, "no-")) {
         const rest = name[3..];
-        if (std.mem.eql(u8, rest, "bold")) { state.bold = false; return true; }
-        if (std.mem.eql(u8, rest, "dim")) { state.dim = false; return true; }
-        if (std.mem.eql(u8, rest, "italic")) { state.italic = false; return true; }
-        if (std.mem.eql(u8, rest, "underlined")) { state.underlined = false; return true; }
-        if (std.mem.eql(u8, rest, "blink")) { state.blink = false; return true; }
-        if (std.mem.eql(u8, rest, "inverse")) { state.inverse = false; return true; }
+        if (std.mem.eql(u8, rest, "bold")) {
+            state.bold = false;
+            return true;
+        }
+        if (std.mem.eql(u8, rest, "dim")) {
+            state.dim = false;
+            return true;
+        }
+        if (std.mem.eql(u8, rest, "italic")) {
+            state.italic = false;
+            return true;
+        }
+        if (std.mem.eql(u8, rest, "underlined")) {
+            state.underlined = false;
+            return true;
+        }
+        if (std.mem.eql(u8, rest, "blink")) {
+            state.blink = false;
+            return true;
+        }
+        if (std.mem.eql(u8, rest, "inverse")) {
+            state.inverse = false;
+            return true;
+        }
         return false;
     }
     if (std.mem.startsWith(u8, name, "toggle-")) {
         const rest = name[7..];
-        if (std.mem.eql(u8, rest, "bold")) { state.bold = !state.bold; return true; }
-        if (std.mem.eql(u8, rest, "dim")) { state.dim = !state.dim; return true; }
-        if (std.mem.eql(u8, rest, "italic")) { state.italic = !state.italic; return true; }
-        if (std.mem.eql(u8, rest, "underlined")) { state.underlined = !state.underlined; return true; }
-        if (std.mem.eql(u8, rest, "blink")) { state.blink = !state.blink; return true; }
-        if (std.mem.eql(u8, rest, "inverse")) { state.inverse = !state.inverse; return true; }
+        if (std.mem.eql(u8, rest, "bold")) {
+            state.bold = !state.bold;
+            return true;
+        }
+        if (std.mem.eql(u8, rest, "dim")) {
+            state.dim = !state.dim;
+            return true;
+        }
+        if (std.mem.eql(u8, rest, "italic")) {
+            state.italic = !state.italic;
+            return true;
+        }
+        if (std.mem.eql(u8, rest, "underlined")) {
+            state.underlined = !state.underlined;
+            return true;
+        }
+        if (std.mem.eql(u8, rest, "blink")) {
+            state.blink = !state.blink;
+            return true;
+        }
+        if (std.mem.eql(u8, rest, "inverse")) {
+            state.inverse = !state.inverse;
+            return true;
+        }
         return false;
     }
-    if (std.mem.eql(u8, name, "bold")) { state.bold = true; return true; }
-    if (std.mem.eql(u8, name, "dim")) { state.dim = true; return true; }
-    if (std.mem.eql(u8, name, "italic")) { state.italic = true; return true; }
-    if (std.mem.eql(u8, name, "underlined")) { state.underlined = true; return true; }
-    if (std.mem.eql(u8, name, "blink")) { state.blink = true; return true; }
-    if (std.mem.eql(u8, name, "inverse")) { state.inverse = true; return true; }
+    if (std.mem.eql(u8, name, "bold")) {
+        state.bold = true;
+        return true;
+    }
+    if (std.mem.eql(u8, name, "dim")) {
+        state.dim = true;
+        return true;
+    }
+    if (std.mem.eql(u8, name, "italic")) {
+        state.italic = true;
+        return true;
+    }
+    if (std.mem.eql(u8, name, "underlined")) {
+        state.underlined = true;
+        return true;
+    }
+    if (std.mem.eql(u8, name, "blink")) {
+        state.blink = true;
+        return true;
+    }
+    if (std.mem.eql(u8, name, "inverse")) {
+        state.inverse = true;
+        return true;
+    }
     if (parseColor(name)) |c| {
         state.fg = c;
         return true;

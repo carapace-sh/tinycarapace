@@ -160,6 +160,10 @@ const Parser = struct {
                 s = std.mem.trim(u8, s[0..hash_pos], " \t");
             }
         }
+        // strip surrounding quotes like yaml.v3 does
+        if (s.len >= 2 and (s[0] == '"' or s[0] == '\'') and s[s.len - 1] == s[0]) {
+            s = s[1 .. s.len - 1];
+        }
         return s;
     }
 
@@ -920,12 +924,13 @@ test "mixed indentation" {
 test "quoted inline value" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const yaml = "name: \"hello world\"\n";
+    const yaml =
+        \\name: "hello world"
+        \\other: 'single quoted'
+    ;
     const val = try parse(arena.allocator(), yaml);
-    // Our parser preserves quotes in inline values
-    const scalar = val.getScalar("name").?;
-    try std.testing.expect(std.mem.startsWith(u8, scalar, "\""));
-    try std.testing.expect(std.mem.endsWith(u8, scalar, "\""));
+    try std.testing.expectEqualStrings("hello world", val.getScalar("name").?);
+    try std.testing.expectEqualStrings("single quoted", val.getScalar("other").?);
 }
 
 test "flow sequence with nested flow map" {
