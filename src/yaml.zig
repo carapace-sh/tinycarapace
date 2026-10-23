@@ -60,10 +60,13 @@ pub fn getScalarFromMap(map: []const Value.KV, key: []const u8) ?[]const u8 {
     return null;
 }
 
+const max_depth: usize = 256;
+
 const Parser = struct {
     allocator: std.mem.Allocator,
     src: []const u8,
     pos: usize = 0,
+    depth: usize = 0,
 
     fn init(a: std.mem.Allocator, src: []const u8) Parser {
         // All parsed strings reference the caller's allocator (usually an arena
@@ -77,6 +80,15 @@ const Parser = struct {
 
     fn dup(self: *Parser, s: []const u8) []const u8 {
         return self.alloc().dupe(u8, s) catch "";
+    }
+
+    fn enter(self: *Parser) anyerror!void {
+        if (self.depth >= max_depth) return error.NestingTooDeep;
+        self.depth += 1;
+    }
+
+    fn exit(self: *Parser) void {
+        self.depth -= 1;
     }
 
     fn skipBlanks(self: *Parser) void {
@@ -182,6 +194,8 @@ const Parser = struct {
     }
 
     fn parseMap(self: *Parser, indent: usize) anyerror!Value {
+        try self.enter();
+        defer self.exit();
         var entries: std.ArrayList(Value.KV) = .empty;
 
         while (true) {
@@ -261,6 +275,8 @@ const Parser = struct {
     }
 
     fn parseList(self: *Parser, indent: usize) anyerror!Value {
+        try self.enter();
+        defer self.exit();
         var items: std.ArrayList(Value) = .empty;
 
         while (true) {
@@ -569,6 +585,8 @@ const Parser = struct {
     }
 
     fn parseFlowSeq(self: *Parser) anyerror!Value {
+        try self.enter();
+        defer self.exit();
         std.debug.assert(self.src[self.pos] == '[');
         self.pos += 1;
         var items: std.ArrayList(Value) = .empty;
@@ -605,6 +623,8 @@ const Parser = struct {
     }
 
     fn parseFlowMap(self: *Parser) anyerror!Value {
+        try self.enter();
+        defer self.exit();
         std.debug.assert(self.src[self.pos] == '{');
         self.pos += 1;
         var entries: std.ArrayList(Value.KV) = .empty;
@@ -1096,4 +1116,25 @@ test "empty value with subcommand block" {
     const flags = cmds[0].getMap("flags").?;
     try std.testing.expectEqualStrings("--verbose", flags[0].key);
     try std.testing.expectEqualStrings("", flags[0].value.scalar);
+}
+
+test "container depth limit" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const deep = "[" ** 300 ++ "" ++ "]" ** 300;
+    try std.testing.expectError(error.NestingTooDeep, parse(arena.allocator(), deep));
+
+    // deeply nested maps/lists via block indentation overflow the cap too
+    var buf: std.ArrayList(u8) = .empty;
+    for (0..300) |i| {
+        try buf.appendNTimes(arena.allocator(), ' ', i);
+        try buf.appendSlice(arena.allocator(), "a:\n");
+    }
+    try std.testing.expectError(error.NestingTooDeep, parse(arena.allocator(), buf.items));
+
+    // moderate nesting still parses fine
+    const ok = "[[[a]]]";
+    const val = try parse(arena.allocator(), ok);
+    try std.testing.expect(val == .list);
 }

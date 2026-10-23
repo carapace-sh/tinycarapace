@@ -103,6 +103,13 @@ pub const Command = struct {
     }
 };
 
+fn scalarOf(v: yaml.Value) []const u8 {
+    return switch (v) {
+        .scalar => |s| s,
+        else => "",
+    };
+}
+
 pub const SpecInfo = struct {
     name: []const u8,
     path: []const u8,
@@ -222,7 +229,7 @@ fn decodeCommandWithParent(allocator: std.mem.Allocator, val: yaml.Value, parent
     if (val.getList("aliases")) |aliases| {
         var arr = try allocator.alloc([]const u8, aliases.len);
         for (aliases, 0..) |a, i| {
-            arr[i] = a.scalar;
+            arr[i] = scalarOf(a);
         }
         cmd_ptr.aliases = arr;
     }
@@ -240,7 +247,7 @@ fn decodeCommandWithParent(allocator: std.mem.Allocator, val: yaml.Value, parent
             arr[i] = switch (group_val) {
                 .list => |list| blk: {
                     var inner = try allocator.alloc([]const u8, list.len);
-                    for (list, 0..) |item, j| inner[j] = item.scalar;
+                    for (list, 0..) |item, j| inner[j] = scalarOf(item);
                     break :blk inner;
                 },
                 else => &.{},
@@ -319,7 +326,7 @@ fn decodeCompletion(allocator: std.mem.Allocator, val: yaml.Value) !Command.Comp
             const values = switch (kv.value) {
                 .list => |l| blk: {
                     var v = try allocator.alloc([]const u8, l.len);
-                    for (l, 0..) |item, j| v[j] = item.scalar;
+                    for (l, 0..) |item, j| v[j] = scalarOf(item);
                     break :blk v;
                 },
                 .scalar => |s| try allocator.dupe([]const u8, &.{s}),
@@ -336,7 +343,7 @@ fn decodeCompletion(allocator: std.mem.Allocator, val: yaml.Value) !Command.Comp
             arr[i] = switch (p) {
                 .list => |list| blk: {
                     var inner = try allocator.alloc([]const u8, list.len);
-                    for (list, 0..) |item, j| inner[j] = item.scalar;
+                    for (list, 0..) |item, j| inner[j] = scalarOf(item);
                     break :blk inner;
                 },
                 // A scalar entry is a single action string (e.g. a chained
@@ -367,7 +374,7 @@ fn decodeCompletion(allocator: std.mem.Allocator, val: yaml.Value) !Command.Comp
             arr[i] = switch (d) {
                 .list => |list| blk: {
                     var inner = try allocator.alloc([]const u8, list.len);
-                    for (list, 0..) |item, j| inner[j] = item.scalar;
+                    for (list, 0..) |item, j| inner[j] = scalarOf(item);
                     break :blk inner;
                 },
                 .scalar => |s| blk: {
@@ -383,7 +390,7 @@ fn decodeCompletion(allocator: std.mem.Allocator, val: yaml.Value) !Command.Comp
 
     if (val.getList("dashany")) |dashany| {
         var arr = try allocator.alloc([]const u8, dashany.len);
-        for (dashany, 0..) |d, i| arr[i] = d.scalar;
+        for (dashany, 0..) |d, i| arr[i] = scalarOf(d);
         comp.dashany = arr;
     }
 
@@ -411,7 +418,7 @@ fn decodeDocumentation(allocator: std.mem.Allocator, val: yaml.Value) !Command.D
 
     if (val.getList("positional")) |pos| {
         var arr = try allocator.alloc([]const u8, pos.len);
-        for (pos, 0..) |p, i| arr[i] = p.scalar;
+        for (pos, 0..) |p, i| arr[i] = scalarOf(p);
         doc.positional = arr;
     }
 
@@ -419,7 +426,7 @@ fn decodeDocumentation(allocator: std.mem.Allocator, val: yaml.Value) !Command.D
 
     if (val.getList("dash")) |dash| {
         var arr = try allocator.alloc([]const u8, dash.len);
-        for (dash, 0..) |d, i| arr[i] = d.scalar;
+        for (dash, 0..) |d, i| arr[i] = scalarOf(d);
         doc.dash = arr;
     }
 
@@ -454,4 +461,26 @@ test "load spec" {
     try std.testing.expectEqualStrings("sub", cmd.commands[0].name);
     try std.testing.expectEqual(@as(usize, 1), cmd.completion.flag.len);
     try std.testing.expectEqual(@as(usize, 1), cmd.completion.positional.len);
+}
+
+test "non-scalar list entries decode as empty" {
+    const yaml_src =
+        \\name: mycmd
+        \\aliases:
+        \\  - {a: b}
+        \\completion:
+        \\  dashany: [{x: y}]
+        \\  positionalany: [[q], r]
+        \\documentation:
+        \\  positional: [desc]
+        \\  dash: [{t: u}]
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try loadSpec(arena.allocator(), yaml_src);
+    try std.testing.expectEqualStrings("", cmd.aliases[0]);
+    try std.testing.expectEqualStrings("", cmd.completion.dashany[0]);
+    try std.testing.expectEqualStrings("", cmd.completion.positionalany[0]);
+    try std.testing.expectEqualStrings("", cmd.documentation.dash[0]);
+    try std.testing.expectEqualStrings("desc", cmd.documentation.positional[0]);
 }

@@ -1082,7 +1082,10 @@ fn jsonDecode(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
                     };
                     i += 4;
                     var utf8_buf: [4]u8 = undefined;
-                    const n = std.unicode.utf8Encode(cp, &utf8_buf) catch 1;
+                    const n = std.unicode.utf8Encode(cp, &utf8_buf) catch {
+                        try buf.appendSlice(allocator, "\u{FFFD}");
+                        continue;
+                    };
                     try buf.appendSlice(allocator, utf8_buf[0..n]);
                 } else {
                     try buf.append(allocator, s[i]);

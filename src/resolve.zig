@@ -86,6 +86,7 @@ fn resolveSingleValue(allocator: std.mem.Allocator, io: std.Io, candidates: *std
         };
         break :blk one;
     };
+    errdefer allocator.free(resolved);
 
     // Apply candidate modifiers in order
     for (mods.items) |m| {
@@ -95,12 +96,7 @@ fn resolveSingleValue(allocator: std.mem.Allocator, io: std.Io, candidates: *std
             try allocator.dupe(u8, m);
         defer allocator.free(expanded_mod);
 
-        const next = action.applyModifierWithPrefix(allocator, resolved, expanded_mod, prefix) catch |err| {
-            allocator.free(resolved);
-            return err;
-        };
-        allocator.free(resolved);
-        resolved = next;
+        resolved = try action.applyModifierWithPrefix(allocator, resolved, expanded_mod, prefix);
     }
 
     // $filterargs: remove candidates whose value equals a consumed positional arg

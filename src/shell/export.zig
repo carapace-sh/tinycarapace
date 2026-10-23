@@ -2,18 +2,40 @@ const std = @import("std");
 const traverse = @import("../traverse.zig");
 const build_options = @import("build_options");
 
-const version_string = build_options.version ++ "-tiny";
+const version_string = build_options.version;
 
 fn writeJsonString(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []const u8) !void {
-    for (s) |c| {
+    var i: usize = 0;
+    while (i < s.len) {
+        const c = s[i];
         switch (c) {
             '"' => try buf.appendSlice(allocator, "\\\""),
             '\\' => try buf.appendSlice(allocator, "\\\\"),
             '\n' => try buf.appendSlice(allocator, "\\n"),
             '\r' => try buf.appendSlice(allocator, "\\r"),
             '\t' => try buf.appendSlice(allocator, "\\t"),
-            else => try buf.append(allocator, c),
+            else => {
+                if (c < 0x20) {
+                    try buf.print(allocator, "\\u{x:0>4}", .{c});
+                    i += 1;
+                    continue;
+                }
+                const seq_len = std.unicode.utf8ByteSequenceLength(c) catch {
+                    try buf.appendSlice(allocator, "\u{FFFD}");
+                    i += 1;
+                    continue;
+                };
+                if (i + seq_len <= s.len and std.unicode.utf8ValidateSlice(s[i .. i + seq_len])) {
+                    try buf.appendSlice(allocator, s[i .. i + seq_len]);
+                    i += seq_len;
+                    continue;
+                } else {
+                    try buf.appendSlice(allocator, "\u{FFFD}");
+                    i += 1;
+                }
+            },
         }
+        i += 1;
     }
 }
 
@@ -164,6 +186,21 @@ test "export json escaping" {
     const out = try formatOutput(arena.allocator(), @constCast(&candidates), "");
     try std.testing.expect(std.mem.indexOf(u8, out, "quote\\\"test") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "line\\nbreak") != null);
+}
+
+test "export json control chars and utf8" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const candidates = [_]traverse.Candidate{
+        .{ .value = "a\x01b\x00c", .description = "délété\xe9ge" },
+    };
+    const out = try formatOutput(arena.allocator(), @constCast(&candidates), "");
+    try std.testing.expect(std.mem.indexOf(u8, out, "a\\u0001b\\u0000c") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "délété") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\u{FFFD}") != null);
+    // the raw invalid byte must not survive
+    const desc_bytes = std.mem.indexOf(u8, out, "dél").?;
+    try std.testing.expect(out[desc_bytes + 6] != 0xe9);
 }
 
 test "export with nospace" {
