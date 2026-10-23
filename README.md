@@ -125,3 +125,21 @@ commands:
       positional:
         - [start, stop, restart]
 ```
+## License
+
+tinycarapace is licensed under the [MIT License](LICENSE.md).
+
+It is a Zig reimplementation of the [carapace](https://github.com/carapace-sh/carapace)
+shell completion ecosystem and contains code derived from the following upstream
+projects:
+
+| Project | License |
+|---------|---------|
+| [carapace](https://github.com/carapace-sh/carapace) | Apache-2.0 |
+| [carapace-bin](https://github.com/carapace-sh/carapace-bin) | MIT |
+| [carapace-bridge](https://github.com/carapace-sh/carapace-bridge) | MIT |
+| [carapace-spec](https://github.com/carapace-sh/carapace-spec) | MIT |
+| [zsh-capture-completion](https://github.com/Valodim/zsh-capture-completion) (embedded in the zsh bridge) | MIT |
+
+Code derived from these projects remains subject to their respective upstream
+licenses; see the LICENSE files in each repository.
