@@ -144,8 +144,8 @@ pub fn formatOutput(allocator: std.mem.Allocator, candidates: []traverse.Candida
 
 test "init script has COMP_WORDBREAKS and mapfile" {
     const specs = [_]spec.SpecInfo{
-        .{ .name = "chmod", .path = "/tmp/chmod.yaml" },
-        .{ .name = "git", .path = "/tmp/git.yaml" },
+        .{ .name = "chmod", .path = "/tmp/chmod.yaml", .source = .user },
+        .{ .name = "git", .path = "/tmp/git.yaml", .source = .user },
     };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

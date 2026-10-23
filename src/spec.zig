@@ -110,15 +110,27 @@ fn scalarOf(v: yaml.Value) []const u8 {
     };
 }
 
+pub const Source = enum {
+    explicit,
+    user,
+    system,
+};
+
 pub const SpecInfo = struct {
     name: []const u8,
     path: []const u8,
+    source: Source,
+};
+
+pub const SpecDir = struct {
+    path: []const u8,
+    source: Source,
 };
 
 pub fn discoverSpecs(io: std.Io, environ: *const std.process.Environ.Map, allocator: std.mem.Allocator) ![]SpecInfo {
     var specs = std.ArrayList(SpecInfo).empty;
 
-    // Parse CARAPACE_SPECS env var override
+    // Explicit specs: CARAPACE_SPECS env var (name=path pairs)
     if (environ.get("CARAPACE_SPECS")) |src| {
         if (src.len > 0) {
             var it = std.mem.splitScalar(u8, src, ':');
@@ -130,6 +142,7 @@ pub fn discoverSpecs(io: std.Io, environ: *const std.process.Environ.Map, alloca
                         try specs.append(allocator, .{
                             .name = try allocator.dupe(u8, name),
                             .path = try allocator.dupe(u8, path),
+                            .source = .explicit,
                         });
                     }
                 }
@@ -137,22 +150,139 @@ pub fn discoverSpecs(io: std.Io, environ: *const std.process.Environ.Map, alloca
         }
     }
 
-    // System-wide specs
-    try addSpecsFromDir(io, allocator, &specs, "/etc/carapace/specs");
-
-    // User specs: $XDG_CONFIG_HOME/carapace/specs or ~/.config/carapace/specs
-    if (environ.get("XDG_CONFIG_HOME")) |xdg| {
-        const user_specs = try std.fs.path.join(allocator, &.{ xdg, "carapace", "specs" });
-        try addSpecsFromDir(io, allocator, &specs, user_specs);
-    } else if (environ.get("HOME")) |home| {
-        const user_specs = try std.fs.path.join(allocator, &.{ home, ".config", "carapace", "specs" });
-        try addSpecsFromDir(io, allocator, &specs, user_specs);
+    const dirs = try computeSpecDirs(environ, allocator);
+    for (dirs) |d| {
+        try addSpecsFromDir(io, allocator, &specs, d.path, d.source);
     }
 
     return specs.toOwnedSlice(allocator);
 }
 
-fn addSpecsFromDir(io: std.Io, allocator: std.mem.Allocator, specs: *std.ArrayList(SpecInfo), dir_path: []const u8) !void {
+// Priority order (first match wins):
+//   1. user dir ($XDG_CONFIG_HOME/carapace/specs or platform fallback)
+//   2. user dirs from CARAPACE_SPECS_PATH
+//   3. system dirs from CARAPACE_SPECS_PATH
+//   4. built-in system dirs (XDG data dirs or platform fallback)
+pub fn computeSpecDirs(environ: *const std.process.Environ.Map, allocator: std.mem.Allocator) ![]SpecDir {
+    var dirs = std.ArrayList(SpecDir).empty;
+
+    const user_dir = try getUserSpecDir(environ, allocator);
+    if (user_dir.len > 0) {
+        try dirs.append(allocator, .{ .path = user_dir, .source = .user });
+    }
+
+    var env_dirs: []SpecDir = &.{};
+    if (environ.get("CARAPACE_SPECS_PATH")) |src| {
+        env_dirs = try parseSpecPath(allocator, src);
+    }
+    for (env_dirs) |d| {
+        if (d.source == .user) try dirs.append(allocator, d);
+    }
+    for (env_dirs) |d| {
+        if (d.source != .user) try dirs.append(allocator, d);
+    }
+
+    const builtin_dirs = try getSystemSpecDirs(environ, allocator);
+    for (builtin_dirs) |d| {
+        try dirs.append(allocator, d);
+    }
+
+    return dirs.toOwnedSlice(allocator);
+}
+
+// CARAPACE_SPECS_PATH is a path-list (platform path-list delimiter) where each
+// entry may carry a classifier suffix: "@user" or "@system". Untagged entries
+// default to system so package-managed dirs (nix, etc.) cannot override the
+// user's own specs; "@user" elevates a dir to user precedence.
+pub fn parseSpecPath(allocator: std.mem.Allocator, src: []const u8) ![]SpecDir {
+    var dirs = std.ArrayList(SpecDir).empty;
+    var it = std.mem.splitScalar(u8, src, std.fs.path.delimiter);
+    while (it.next()) |raw| {
+        var entry = std.mem.trim(u8, raw, " \t");
+        if (entry.len == 0) continue;
+        var source: Source = .system;
+        if (std.mem.endsWith(u8, entry, "@user")) {
+            source = .user;
+            entry = entry[0 .. entry.len - "@user".len];
+        } else if (std.mem.endsWith(u8, entry, "@system")) {
+            entry = entry[0 .. entry.len - "@system".len];
+        }
+        const path = std.mem.trim(u8, entry, " \t");
+        if (path.len == 0) continue;
+        try dirs.append(allocator, .{
+            .path = try allocator.dupe(u8, path),
+            .source = source,
+        });
+    }
+    return dirs.toOwnedSlice(allocator);
+}
+
+fn getUserSpecDir(environ: *const std.process.Environ.Map, allocator: std.mem.Allocator) ![]const u8 {
+    if (environ.get("XDG_CONFIG_HOME")) |xdg| {
+        if (xdg.len > 0 and std.fs.path.isAbsolute(xdg)) {
+            return std.fs.path.join(allocator, &.{ xdg, "carapace", "specs" });
+        }
+    }
+    const native_os = @import("builtin").os.tag;
+    if (native_os == .windows) {
+        if (environ.get("APPDATA")) |appdata| {
+            if (appdata.len > 0) {
+                return std.fs.path.join(allocator, &.{ appdata, "carapace", "specs" });
+            }
+        }
+        return "";
+    }
+    const home = environ.get("HOME") orelse return "";
+    if (native_os == .macos) {
+        return std.fs.path.join(allocator, &.{ home, "Library", "Application Support", "carapace", "specs" });
+    }
+    return std.fs.path.join(allocator, &.{ home, ".config", "carapace", "specs" });
+}
+
+fn getSystemSpecDirs(environ: *const std.process.Environ.Map, allocator: std.mem.Allocator) ![]SpecDir {
+    var dirs = std.ArrayList(SpecDir).empty;
+    const native_os = @import("builtin").os.tag;
+    if (native_os == .windows) {
+        if (environ.get("ProgramData")) |pd| {
+            if (pd.len > 0) {
+                try dirs.append(allocator, .{
+                    .path = try std.fs.path.join(allocator, &.{ pd, "carapace", "specs" }),
+                    .source = .system,
+                });
+            }
+        }
+        return dirs.toOwnedSlice(allocator);
+    }
+    if (native_os == .macos) {
+        try dirs.append(allocator, .{
+            .path = "/Library/Application Support/carapace/specs",
+            .source = .system,
+        });
+        return dirs.toOwnedSlice(allocator);
+    }
+    const data_dirs = environ.get("XDG_DATA_DIRS") orelse "";
+    if (data_dirs.len > 0) {
+        var it = std.mem.splitScalar(u8, data_dirs, std.fs.path.delimiter);
+        while (it.next()) |dir| {
+            const trimmed = std.mem.trim(u8, dir, " \t");
+            if (trimmed.len == 0) continue;
+            try dirs.append(allocator, .{
+                .path = try std.fs.path.join(allocator, &.{ trimmed, "carapace", "specs" }),
+                .source = .system,
+            });
+        }
+    } else {
+        for ([_][]const u8{ "/usr/local/share", "/usr/share" }) |base| {
+            try dirs.append(allocator, .{
+                .path = try std.fs.path.join(allocator, &.{ base, "carapace", "specs" }),
+                .source = .system,
+            });
+        }
+    }
+    return dirs.toOwnedSlice(allocator);
+}
+
+fn addSpecsFromDir(io: std.Io, allocator: std.mem.Allocator, specs: *std.ArrayList(SpecInfo), dir_path: []const u8, source: Source) !void {
     var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound, error.NotDir, error.AccessDenied => return,
         else => return err,
@@ -171,7 +301,7 @@ fn addSpecsFromDir(io: std.Io, allocator: std.mem.Allocator, specs: *std.ArrayLi
         // Skip variant files (e.g. "app.linux.yaml")
         if (std.mem.indexOfScalar(u8, stem, '.')) |_| continue;
 
-        // Skip if already registered (env var takes precedence)
+        // Skip if already registered (higher-priority source takes precedence)
         if (findSpec(specs.items, stem)) |_| continue;
 
         // Validate file is readable (silently skip unreadable files)
@@ -183,6 +313,7 @@ fn addSpecsFromDir(io: std.Io, allocator: std.mem.Allocator, specs: *std.ArrayLi
         try specs.append(allocator, .{
             .name = try allocator.dupe(u8, stem),
             .path = try std.fs.path.join(allocator, &.{ dir_path, name_slice }),
+            .source = source,
         });
     }
 }
@@ -483,4 +614,101 @@ test "non-scalar list entries decode as empty" {
     try std.testing.expectEqualStrings("", cmd.completion.positionalany[0]);
     try std.testing.expectEqualStrings("", cmd.documentation.dash[0]);
     try std.testing.expectEqualStrings("desc", cmd.documentation.positional[0]);
+}
+
+test "parseSpecPath classifier" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const dirs = try parseSpecPath(arena.allocator(), "/a@user:/b:/c@system");
+    if (std.fs.path.delimiter == ':') {
+        try std.testing.expectEqual(@as(usize, 3), dirs.len);
+        try std.testing.expectEqualStrings("/a", dirs[0].path);
+        try std.testing.expectEqual(Source.user, dirs[0].source);
+        try std.testing.expectEqualStrings("/b", dirs[1].path);
+        try std.testing.expectEqual(Source.system, dirs[1].source);
+        try std.testing.expectEqualStrings("/c", dirs[2].path);
+        try std.testing.expectEqual(Source.system, dirs[2].source);
+    } else {
+        // ';' separator: no '@' suffixes present in one entry
+        try std.testing.expectEqual(@as(usize, 1), dirs.len);
+        try std.testing.expectEqual(Source.system, dirs[0].source);
+    }
+}
+
+test "computeSpecDirs precedence" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var env = std.process.Environ.Map.init(arena.allocator());
+    try env.put("XDG_CONFIG_HOME", "/user/cfg");
+    try env.put("XDG_DATA_DIRS", "/data1:/data2");
+    try env.put("CARAPACE_SPECS_PATH", "/env/user@user:/env/sys");
+    const dirs = try computeSpecDirs(&env, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 5), dirs.len);
+    try std.testing.expectEqualStrings("/user/cfg/carapace/specs", dirs[0].path);
+    try std.testing.expectEqual(Source.user, dirs[0].source);
+    try std.testing.expectEqualStrings("/env/user", dirs[1].path);
+    try std.testing.expectEqual(Source.user, dirs[1].source);
+    try std.testing.expectEqualStrings("/env/sys", dirs[2].path);
+    try std.testing.expectEqual(Source.system, dirs[2].source);
+    try std.testing.expectEqualStrings("/data1/carapace/specs", dirs[3].path);
+    try std.testing.expectEqual(Source.system, dirs[3].source);
+    try std.testing.expectEqualStrings("/data2/carapace/specs", dirs[4].path);
+}
+
+test "computeSpecDirs default data dirs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var env = std.process.Environ.Map.init(arena.allocator());
+    const dirs = try computeSpecDirs(&env, arena.allocator());
+    if (std.fs.path.delimiter == ':') {
+        try std.testing.expectEqualStrings("/usr/local/share/carapace/specs", dirs[dirs.len - 2].path);
+        try std.testing.expectEqualStrings("/usr/share/carapace/specs", dirs[dirs.len - 1].path);
+        try std.testing.expectEqual(Source.system, dirs[dirs.len - 1].source);
+    }
+}
+
+test "discoverSpecs precedence user over system" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const user_specs = try std.fmt.allocPrint(allocator, "{s}/user/carapace/specs", .{&tmp.sub_path});
+    const sys_specs = try std.fmt.allocPrint(allocator, "{s}/sys/carapace/specs", .{&tmp.sub_path});
+    try tmp.dir.createDirPath(std.testing.io, user_specs);
+    try tmp.dir.createDirPath(std.testing.io, sys_specs);
+    const user_dir = try tmp.dir.openDir(std.testing.io, user_specs, .{});
+    defer user_dir.close(std.testing.io);
+    const sys_dir = try tmp.dir.openDir(std.testing.io, sys_specs, .{});
+    defer sys_dir.close(std.testing.io);
+
+    const user_file = try user_dir.createFile(std.testing.io, "a.yaml", .{});
+    try user_file.writeStreamingAll(std.testing.io, "\nname: a\n");
+    user_file.close(std.testing.io);
+    const shared_user_file = try user_dir.createFile(std.testing.io, "dupe.yaml", .{});
+    try shared_user_file.writeStreamingAll(std.testing.io, "\nname: dupe\nuser\n");
+    shared_user_file.close(std.testing.io);
+    const sys_a_file = try sys_dir.createFile(std.testing.io, "b.yaml", .{});
+    try sys_a_file.writeStreamingAll(std.testing.io, "\nname: b\n");
+    sys_a_file.close(std.testing.io);
+    const shared_sys_file = try sys_dir.createFile(std.testing.io, "dupe.yaml", .{});
+    try shared_sys_file.writeStreamingAll(std.testing.io, "\nname: dupe\nsystem\n");
+    shared_sys_file.close(std.testing.io);
+
+    const user_config = try tmp.dir.realPathFileAlloc(std.testing.io, user_specs[0 .. user_specs.len - "carapace/specs".len], allocator);
+    const sys_data = try tmp.dir.realPathFileAlloc(std.testing.io, sys_specs[0 .. sys_specs.len - "carapace/specs".len], allocator);
+
+    var env = std.process.Environ.Map.init(allocator);
+    try env.put("XDG_CONFIG_HOME", user_config);
+    try env.put("XDG_DATA_DIRS", sys_data);
+
+    const specs = try discoverSpecs(std.testing.io, &env, allocator);
+    const a = findSpec(specs, "a") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(Source.user, a.source);
+    const b = findSpec(specs, "b") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(Source.system, b.source);
+    const dupe = findSpec(specs, "dupe") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(Source.user, dupe.source);
+    try std.testing.expectEqualStrings("\nname: dupe\nuser\n", try std.Io.Dir.cwd().readFileAlloc(std.testing.io, dupe.path, allocator, .limited(1024)));
 }
