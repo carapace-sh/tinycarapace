@@ -232,10 +232,22 @@ fn parseRunArgs(allocator: std.mem.Allocator, src: []const u8) ![]const []const 
     return items.toOwnedSlice(allocator);
 }
 
+/// Convert the process arguments to UTF-8 strings.
+/// Handles the raw WASI and Windows command line formats transparently.
+fn argsToUtf8(allocator: std.mem.Allocator, args: std.process.Args) ![]const []const u8 {
+    var it = try std.process.Args.Iterator.initAllocator(args, allocator);
+    defer it.deinit();
+    var list = std.ArrayList([]const u8).empty;
+    while (it.next()) |a| try list.append(allocator, try allocator.dupe(u8, a));
+    return list.toOwnedSlice(allocator);
+}
+
 pub fn main(init: std.process.Init) !u8 {
     const allocator = init.gpa;
 
-    const argv = init.minimal.args.vector;
+    var argv_arena = std.heap.ArenaAllocator.init(allocator);
+    defer argv_arena.deinit();
+    const argv = try argsToUtf8(argv_arena.allocator(), init.minimal.args);
     if (argv.len < 2) {
         std.debug.print(
             "usage: tinycarapace _carapace [bash|zsh|fish|powershell]\n" ++
@@ -248,13 +260,13 @@ pub fn main(init: std.process.Init) !u8 {
     }
 
     // tinycarapace _carapace [bash|zsh|fish|powershell] → init script
-    if (std.mem.eql(u8, std.mem.span(argv[1]), "_carapace")) {
+    if (std.mem.eql(u8, argv[1], "_carapace")) {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         const specs = try spec.discoverSpecs(init.io, init.environ_map, arena.allocator());
         if (specs.len == 0) return 0;
 
-        const shell_name = if (argv.len >= 3) std.mem.span(argv[2]) else "bash";
+        const shell_name = if (argv.len >= 3) argv[2] else "bash";
         const init_shells = comptime [_]struct { name: []const u8, mod: type }{
             .{ .name = "bash", .mod = bash },
             .{ .name = "zsh", .mod = zsh },
@@ -272,17 +284,17 @@ pub fn main(init: std.process.Init) !u8 {
         return 1;
     }
 
-    const name = std.mem.span(argv[1]);
+    const name = argv[1];
 
     // tinycarapace <name> export [<args...>]
-    if (argv.len >= 3 and std.mem.eql(u8, std.mem.span(argv[2]), "export")) {
+    if (argv.len >= 3 and std.mem.eql(u8, argv[2], "export")) {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
 
         var cmdline_args: std.ArrayList([]const u8) = .empty;
         if (argv.len > 3) {
             for (argv[3..]) |a| {
-                try cmdline_args.append(arena.allocator(), std.mem.span(a));
+                try cmdline_args.append(arena.allocator(), a);
             }
         }
 
@@ -302,7 +314,7 @@ pub fn main(init: std.process.Init) !u8 {
     };
 
     inline for (shells) |shell| {
-        if (argv.len >= 3 and std.mem.eql(u8, std.mem.span(argv[2]), shell.name)) {
+        if (argv.len >= 3 and std.mem.eql(u8, argv[2], shell.name)) {
             if (argv.len == 3) {
                 // tinycarapace <name> <shell> → snippet for single command
                 var arena = std.heap.ArenaAllocator.init(allocator);
@@ -319,7 +331,7 @@ pub fn main(init: std.process.Init) !u8 {
             var cmdline_args: std.ArrayList([]const u8) = .empty;
             if (argv.len > 3) {
                 for (argv[3..]) |a| {
-                    try cmdline_args.append(arena.allocator(), std.mem.span(a));
+                    try cmdline_args.append(arena.allocator(), a);
                 }
             }
 
@@ -339,7 +351,7 @@ pub fn main(init: std.process.Init) !u8 {
     }
 
     // tinycarapace <name> run [<args...>]
-    if (argv.len >= 3 and std.mem.eql(u8, std.mem.span(argv[2]), "run")) {
+    if (argv.len >= 3 and std.mem.eql(u8, argv[2], "run")) {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
 
@@ -369,7 +381,7 @@ pub fn main(init: std.process.Init) !u8 {
         var extra_args: std.ArrayList([]const u8) = .empty;
         if (argv.len > 3) {
             for (argv[3..]) |a| {
-                try extra_args.append(arena.allocator(), std.mem.span(a));
+                try extra_args.append(arena.allocator(), a);
             }
         }
 

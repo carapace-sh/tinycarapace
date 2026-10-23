@@ -1,0 +1,22 @@
+version: 2
+
+builds:
+  - id: default
+    builder: zig
+    binary: tinycarapace
+    targets:
+      - x86_64-linux-musl
+      - aarch64-linux-musl
+      - x86_64-macos
+      - aarch64-macos
+      - x86_64-windows-gnu
+      - aarch64-windows-gnu
+    flags:
+      - -Doptimize=ReleaseFast
+
+archives:
+  - id: default
+    name_template: 'tinycarapace_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    format_overrides:
+      - goos: windows
+        formats: [zip]

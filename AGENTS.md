@@ -42,9 +42,16 @@ or unwinding code.
 
 Cross-compile (no extra toolchain needed):
 ```bash
-zig build -Dtarget=x86_64-linux-musl
-zig build -Dtarget=aarch64-linux-musl
+zig build -Dtarget=x86_64-linux-musl     # linux amd64
+zig build -Dtarget=aarch64-linux-musl    # linux arm64
+zig build -Dtarget=aarch64-macos         # darwin arm64
+zig build -Dtarget=x86_64-windows-gnu    # windows amd64
 ```
+
+Releases use [GoReleaser](https://goreleaser.com) with its experimental Zig
+builder (`.goreleaser.yml`) triggered on `v*` tags via
+`.github/workflows/release.yml`. Arguments are converted to UTF-8 up front in
+`argsToUtf8` (`src/main.zig`) so the raw WASI/Windows command line formats work.
 
 ---
 
