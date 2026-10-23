@@ -79,7 +79,7 @@ automatically.
 ## Status
 
 Core functionality is implemented; a few macros are simplified compared to
-carapace. See [plan.md](plan.md) and [AGENTS.md](AGENTS.md) for details.
+carapace. See [AGENTS.md](AGENTS.md) for details.
 
 | Feature | Status |
 |---------|--------|

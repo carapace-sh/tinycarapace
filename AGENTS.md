@@ -315,12 +315,8 @@ Supports:
 - **No `std.log` or debug logging** — uses `std.debug.print` for error messages
 - **No `COMP_WORDBREAKS` re-lexing** — unlike full carapace, there's no re-lexing
   of the command line with `COMP_WORDBREAKS` characters
-- **`plan.md`** is the design document — contains spec, architecture decisions,
-  and implementation phases
 - **`example/example.yaml`** is a test spec with flags, subcommands, and
   completion values — use it for manual testing
-- The `build.zig.zon` has `minimum_zig_version = "0.15.0"` but the code uses
-  Zig 0.16.0 APIs — update this if adding new APIs
 - **`expandVariables`** in `traverse.zig` supports `${C_VALUE}`, `${C_ARG0}`,
   `${C_FLAG_NAME}`, and `${VAR:-default}` — used in `run` mode and completion
   value templates
@@ -330,18 +326,6 @@ Supports:
   shebang), shell macro (`$(...)`, `$sh(...)`, `$bash(...)`, ...), and alias
   (`[json, array]` or plain string). The exit code of the child process is
   propagated.
-
----
-
-## Phase Status
-
-From `plan.md`:
-
-- **Phase 1 (Core + bash)**: ✅ Complete
-- **Phase 2 (Core improvements)**: ✅ dash/dashany, persistent flags, flag values, `$files/$directories/$executables`, `$(cmd)`
-- **Phase 3 (Extended macros)**: ✅ All modifiers, `$message`, `$list`, `$multiparts`, `$chdir`, `$split`, `$splitp`, `$bridge.*`
-- **Phase 4 (Shell support)**: ✅ Bash, zsh, fish, powershell (all with upstream-compatible output formats)
-- **Phase 5 (Variable expansion & run mode)**: ✅ Variable expansion, `run` mode, `non-interspersed`, `exclusiveflags`, `group`, `nargs`
 
 ### Not implemented (deferred)
 
