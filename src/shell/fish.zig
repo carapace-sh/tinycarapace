@@ -111,7 +111,7 @@ pub fn formatOutput(allocator: std.mem.Allocator, candidates: []traverse.Candida
 
 test "fish init script" {
     const specs = [_]spec.SpecInfo{
-        .{ .name = "mycmd", .path = "/tmp/mycmd.yaml" },
+        .{ .name = "mycmd", .path = "/tmp/mycmd.yaml", .source = .user },
     };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

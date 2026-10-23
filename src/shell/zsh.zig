@@ -257,7 +257,7 @@ fn formatZstyles(allocator: std.mem.Allocator, candidates: []traverse.Candidate)
 
 test "zsh init script" {
     const specs = [_]spec.SpecInfo{
-        .{ .name = "mycmd", .path = "/tmp/mycmd.yaml" },
+        .{ .name = "mycmd", .path = "/tmp/mycmd.yaml", .source = .user },
     };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

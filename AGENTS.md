@@ -317,6 +317,28 @@ Supports:
 
 ### Non-Obvious
 
+- **Spec discovery** (`spec.zig:discoverSpecs`, priority order, first match
+  wins; `SpecInfo.source` records the origin):
+  1. `CARAPACE_SPECS` — explicit `name=path` pairs (`name1=path1:name2=path2`)
+  2. user dir — `$XDG_CONFIG_HOME/carapace/specs` (if absolute), else per
+     platform: unix `~/.config/carapace/specs`, darwin
+     `~/Library/Application Support/carapace/specs`, windows `%APPDATA%\carapace\specs`
+  3. user dirs from `CARAPACE_SPECS_PATH` (`path@user`)
+  4. system dirs from `CARAPACE_SPECS_PATH` (untagged or `path@system`)
+  5. built-in system dirs — unix `$XDG_DATA_DIRS/.../carapace/specs` (default
+     `/usr/local/share:/usr/share`), darwin
+     `/Library/Application Support/carapace/specs`, windows `%ProgramData%\carapace\specs`
+
+  `CARAPACE_SPECS_PATH` is a path-list (platform path-list delimiter, `:` on
+  unix / `;` on windows); untagged entries default to *system* so
+  package-managed dirs (nix etc.) can never override the user's specs — see
+  carapace-bin#3361/#1336. First matching spec file registration wins
+  (`addSpecsFromDir` skips already-registered names). The matching upstream
+  implementation lives in carapace-bin
+  (`cmd/carapace/cmd/completers/completers.go`: `SpecDirs`/`SpecPath`/
+  `specDataDirs`, group priority `user` before `system` in
+  `pkg/completer/completers.go`) and carapace (`pkg/xdg/xdg.go`: `DataDirs`);
+  keep the Zig and Go versions aligned when either changes.
 - **`@constCast`** is used in test code to pass a const slice to a function
   expecting a mutable parameter — test-only pattern
 - **No `std.log` or debug logging** — uses `std.debug.print` for error messages
