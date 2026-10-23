@@ -21,7 +21,7 @@ fn quoteName(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
 
 pub fn generateInitScript(allocator: std.mem.Allocator, specs: []const spec.SpecInfo) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
-    const exe = "carapace-tiny";
+    const exe = "tinycarapace";
 
     // Note: COMP_WORDBREAKS is exported but not used for re-lexing the command line.
     // Full carapace re-lexes COMP_LINE using COMP_WORDBREAKS characters as delimiters
@@ -67,7 +67,7 @@ pub fn generateInitScript(allocator: std.mem.Allocator, specs: []const spec.Spec
 
 pub fn generateSnippet(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
-    const exe = "carapace-tiny";
+    const exe = "tinycarapace";
 
     try buf.print(allocator,
         \\#!/bin/bash

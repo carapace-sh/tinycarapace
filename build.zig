@@ -10,7 +10,7 @@ pub fn build(b: *std.Build) void {
     const options_module = options.createModule();
 
     const exe = b.addExecutable(.{
-        .name = "carapace-tiny",
+        .name = "tinycarapace",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -28,7 +28,7 @@ pub fn build(b: *std.Build) void {
 
     const run_cmd = b.addRunArtifact(exe);
     if (b.args) |args| run_cmd.addArgs(args);
-    const run_step = b.step("run", "Run carapace-tiny");
+    const run_step = b.step("run", "Run tinycarapace");
     run_step.dependOn(&run_cmd.step);
 
     const tests = b.addTest(.{

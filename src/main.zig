@@ -238,16 +238,16 @@ pub fn main(init: std.process.Init) !u8 {
     const argv = init.minimal.args.vector;
     if (argv.len < 2) {
         std.debug.print(
-            "usage: carapace-tiny _carapace [bash|zsh|fish|powershell]\n" ++
-                "       carapace-tiny <name> [bash|zsh|fish|powershell] [<name> <args...>]\n" ++
-                "       carapace-tiny <name> export [<name> <args...>]\n" ++
-                "       carapace-tiny <name> run [<args...>]\n",
+            "usage: tinycarapace _carapace [bash|zsh|fish|powershell]\n" ++
+                "       tinycarapace <name> [bash|zsh|fish|powershell] [<name> <args...>]\n" ++
+                "       tinycarapace <name> export [<name> <args...>]\n" ++
+                "       tinycarapace <name> run [<args...>]\n",
             .{},
         );
         return 1;
     }
 
-    // carapace-tiny _carapace [bash|zsh|fish|powershell] → init script
+    // tinycarapace _carapace [bash|zsh|fish|powershell] → init script
     if (std.mem.eql(u8, std.mem.span(argv[1]), "_carapace")) {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
@@ -274,7 +274,7 @@ pub fn main(init: std.process.Init) !u8 {
 
     const name = std.mem.span(argv[1]);
 
-    // carapace-tiny <name> export [<args...>]
+    // tinycarapace <name> export [<args...>]
     if (argv.len >= 3 and std.mem.eql(u8, std.mem.span(argv[2]), "export")) {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
@@ -293,7 +293,7 @@ pub fn main(init: std.process.Init) !u8 {
         return 0;
     }
 
-    // carapace-tiny <name> (bash|zsh|fish|powershell) [<name> <args...>]
+    // tinycarapace <name> (bash|zsh|fish|powershell) [<name> <args...>]
     const shells = comptime [_]struct { name: []const u8, mod: type }{
         .{ .name = "bash", .mod = bash },
         .{ .name = "zsh", .mod = zsh },
@@ -304,7 +304,7 @@ pub fn main(init: std.process.Init) !u8 {
     inline for (shells) |shell| {
         if (argv.len >= 3 and std.mem.eql(u8, std.mem.span(argv[2]), shell.name)) {
             if (argv.len == 3) {
-                // carapace-tiny <name> <shell> → snippet for single command
+                // tinycarapace <name> <shell> → snippet for single command
                 var arena = std.heap.ArenaAllocator.init(allocator);
                 defer arena.deinit();
                 const snippet = try shell.mod.generateSnippet(arena.allocator(), name);
@@ -312,7 +312,7 @@ pub fn main(init: std.process.Init) !u8 {
                 return 0;
             }
 
-            // carapace-tiny <name> <shell> <name> <args...> → completions
+            // tinycarapace <name> <shell> <name> <args...> → completions
             var arena = std.heap.ArenaAllocator.init(allocator);
             defer arena.deinit();
 
@@ -338,7 +338,7 @@ pub fn main(init: std.process.Init) !u8 {
         }
     }
 
-    // carapace-tiny <name> run [<args...>]
+    // tinycarapace <name> run [<args...>]
     if (argv.len >= 3 and std.mem.eql(u8, std.mem.span(argv[2]), "run")) {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();

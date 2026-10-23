@@ -26,7 +26,7 @@ fn escapeName(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
 
 pub fn generateInitScript(allocator: std.mem.Allocator, specs: []const spec.SpecInfo) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
-    const exe = "carapace-tiny";
+    const exe = "tinycarapace";
 
     try buf.print(allocator,
         \\using namespace System.Management.Automation
@@ -86,7 +86,7 @@ pub fn generateInitScript(allocator: std.mem.Allocator, specs: []const spec.Spec
 
 pub fn generateSnippet(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
-    const exe = "carapace-tiny";
+    const exe = "tinycarapace";
     const cmd_sanitized = try sanitize(allocator, name);
     defer allocator.free(cmd_sanitized);
 

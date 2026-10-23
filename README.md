@@ -15,10 +15,10 @@ mkdir -p ~/.config/carapace/specs
 cp myapp.yaml ~/.config/carapace/specs/
 
 # Source the init script to register all completers
-source <(carapace-tiny _carapace bash)
+source <(tinycarapace _carapace bash)
 
 # Or source a single completer
-source <(carapace-tiny myapp bash)
+source <(tinycarapace myapp bash)
 ```
 
 For commands without a spec file, set `CARAPACE_BRIDGES` to fall back to
@@ -26,11 +26,11 @@ shell-native completions (bash, fish, zsh, inshellisense):
 
 ```bash
 export CARAPACE_BRIDGES=bash
-carapace-tiny git export ""               # uses bash's git completion
+tinycarapace git export ""               # uses bash's git completion
 ```
 
 For spec-backed commands the export command line starts with the command name
-again: `carapace-tiny myapp export myapp <args...>`.
+again: `tinycarapace myapp export myapp <args...>`.
 
 ## Build
 
@@ -50,11 +50,11 @@ to keep the binary small.
 ## Usage
 
 ```
-carapace-tiny _carapace [bash|zsh|fish|powershell]   # Init script for all specs
-carapace-tiny <name> <shell>                         # Snippet for one command
-carapace-tiny <name> <shell> <name> <args...>        # Completion callback
-carapace-tiny <name> export [<name> <args...>]       # JSON export (carapace format)
-carapace-tiny <name> run [<args...>]                 # Execute spec's run field
+tinycarapace _carapace [bash|zsh|fish|powershell]   # Init script for all specs
+tinycarapace <name> <shell>                         # Snippet for one command
+tinycarapace <name> <shell> <name> <args...>        # Completion callback
+tinycarapace <name> export [<name> <args...>]       # JSON export (carapace format)
+tinycarapace <name> run [<args...>]                 # Execute spec's run field
 ```
 
 Specs are discovered from these directories (in order of precedence):
@@ -70,9 +70,9 @@ automatically.
 
 1. Specs are YAML files following the
    [carapace-spec](https://github.com/carapace-sh/carapace-spec) format
-2. `carapace-tiny _carapace bash` generates a `complete -F` function that
+2. `tinycarapace _carapace bash` generates a `complete -F` function that
    registers all your commands
-3. On TAB press, the function calls `carapace-tiny <name> bash <name> <args...>`
+3. On TAB press, the function calls `tinycarapace <name> bash <name> <args...>`
    which traverses the parsed spec tree and returns matching candidates
 4. If no spec is found, `CARAPACE_BRIDGES` provides shell-native fallback
 

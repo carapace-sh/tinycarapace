@@ -30,7 +30,7 @@ but must be **consistent** with upstream for the features it implements.
 ## Essential Commands
 
 ```bash
-zig build                                    # Build (zig-out/bin/carapace-tiny)
+zig build                                    # Build (zig-out/bin/tinycarapace)
 zig build test                                # Run all tests (no output = success)
 zig fmt --check src build.zig                 # Formatting check
 zig build -Doptimize=ReleaseFast              # Release (~534 KB, already stripped)

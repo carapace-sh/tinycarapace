@@ -13,7 +13,7 @@ fn escapeName(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
 
 pub fn generateInitScript(allocator: std.mem.Allocator, specs: []const spec.SpecInfo) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
-    const exe = "carapace-tiny";
+    const exe = "tinycarapace";
 
     // For init script, use one function that dispatches per command
     try buf.appendSlice(allocator,
@@ -57,7 +57,7 @@ pub fn generateInitScript(allocator: std.mem.Allocator, specs: []const spec.Spec
 
 pub fn generateSnippet(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
-    const exe = "carapace-tiny";
+    const exe = "tinycarapace";
     const name_escaped = try escapeName(allocator, name);
 
     try buf.print(allocator,
